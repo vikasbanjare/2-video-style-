@@ -130,3 +130,93 @@ def build_cues(plan_words, ccfg, hook_end=0.0, hook_mode="static", gap_after_hoo
                 shown = [[x["t"] for (lj, x) in flat[:k + 1] if lj == j] for j in range(li + 1)]
                 cues.append((w["s"], e, "\n".join(" ".join(s) for s in shown)))
     return [(round(s, 3), round(e, 3), t) for s, e, t in cues if e - s > 0.04]
+
+
+# ---------------------------------------------------------------- Style 02: chunks
+NUMBER = re.compile(r"^\$?\d[\d,.]*[kKmMbB%]?$")
+NUM_WORDS = {"ten", "hundred", "thousand", "million", "billion", "first", "top", "zero"}
+
+
+def _content(t):
+    from .broll import STOP
+    k = re.sub(r"[^a-z0-9']", "", t.lower())
+    return len(k) >= 3 and k not in STOP
+
+
+def emphasis_score(chunk):
+    """How much a 1-3 word chunk deserves the big bold treatment: numbers and
+    dense content phrases ("broke the internet", "the top ten", "bonus chapter")."""
+    texts = [w["t"] for w in chunk]
+    score = 2.0 * sum(1 for t in texts if NUMBER.match(t) or t.lower() in NUM_WORDS)
+    score += sum(1.0 for t in texts if _content(t))
+    if len(texts) >= 2 and _content(texts[-1]):
+        score += 0.5                      # phrases that end on the key word read as a punch
+    return score
+
+
+def build_chunks(plan_words, ccfg):
+    """1-3 word captions that replace each other (Style 02). Returns
+    (normal_cues, emphasis_cues): two lists, for two caption tracks/styles."""
+    words = []
+    for w in plan_words:
+        t, end, cut = clean(w["w"], ccfg)
+        if t:
+            words.append(dict(w, t=t, end=end, cut=cut))
+    max_w, max_c = ccfg.get("chunk_max_words", 3), ccfg.get("chunk_max_chars", 18)
+    # hard breaks at sentence ends, cut-offs and pauses; inside a run, split into
+    # 1-3 word phrases with the lowest cost (never end on "the/a/for/that...")
+    runs, cur = [], []
+    for w in words:
+        if cur and (cur[-1]["end"] or cur[-1]["cut"] or w.get("gap_src", 0) >= ccfg.get("page_break_pause", 0.35)):
+            runs.append(cur)
+            cur = []
+        cur.append(w)
+    if cur:
+        runs.append(cur)
+
+    def cost(run, a, b):
+        c = run[a:b]
+        if len(_text(c)) > max_c and len(c) > 1:
+            return 1e9
+        k = 1.0
+        if not _content(c[-1]["t"]) and not NUMBER.match(c[-1]["t"]):
+            k += 1.2                                  # dangling "the", "a", "for"...
+        if len(c) == 1 and not (_content(c[0]["t"]) or NUMBER.match(c[0]["t"])):
+            k += 1.0
+        if c[0]["t"].lower() in BREAK_BEFORE:
+            k -= 0.3                                  # phrases naturally start here
+        if b < len(run) and _content(run[b]["t"]) and run[b]["t"].lower() not in BREAK_BEFORE \
+                and (_content(c[-1]["t"]) or c[-1]["t"].lower() in NUM_WORDS):
+            k += 1.5                                  # splitting "top | ten", "Hormozi | book"
+        return k
+
+    chunks = []
+    for run in runs:
+        best = [0.0] + [1e18] * len(run)
+        back = [0] * (len(run) + 1)
+        for j in range(1, len(run) + 1):
+            for n in range(1, min(max_w, j) + 1):
+                c = best[j - n] + cost(run, j - n, j)
+                if c < best[j]:
+                    best[j], back[j] = c, j - n
+        cuts, j = [], len(run)
+        while j > 0:
+            cuts.append((back[j], j))
+            j = back[j]
+        chunks += [run[a:b] for a, b in reversed(cuts)]
+    # emphasis: best-scoring chunks, never two in a row, at most `emphasis_share` of all chunks
+    scores = [emphasis_score(c) for c in chunks]
+    budget = int(round(len(chunks) * ccfg.get("emphasis_share", 0.3)))
+    emph = set()
+    for i in sorted(range(len(chunks)), key=lambda i: -scores[i]):
+        if len(emph) >= budget or scores[i] < ccfg.get("emphasis_min_score", 2.0):
+            break
+        if i - 1 not in emph and i + 1 not in emph:
+            emph.add(i)
+    normal, strong = [], []
+    for i, c in enumerate(chunks):
+        s = c[0]["s"]
+        nxt = chunks[i + 1][0]["s"] if i + 1 < len(chunks) else None
+        e = nxt if nxt is not None and nxt - c[-1]["e"] < 0.6 else c[-1]["e"] + ccfg.get("hold_after_last_word", 0.2)
+        (strong if i in emph else normal).append((round(s, 3), round(max(e, s + 0.1), 3), _text(c)))
+    return normal, strong

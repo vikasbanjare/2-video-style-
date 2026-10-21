@@ -13,25 +13,32 @@ def _ass_time(t):
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def write_ass(cues, look, W, H, path):
-    size = look["size_px_at_1080w"] * W / 1080
-    sh = look.get("shadow") or {"opacity": 0, "distance_px": 0}
-    alpha = format(int(255 * (1 - sh["opacity"])), "02X")
-    y = H * look["center_y_pct"] / 100
-    font = look.get("font_fallback", "Inter SemiBold")
+def write_ass(tracks, W, H, path):
+    """tracks: [(cues, look)], one ASS style per caption track (e.g. normal + emphasis)."""
     head = (
         "[Script Info]\nScriptType: v4.00+\n"
         f"PlayResX: {W}\nPlayResY: {H}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
         "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Cap,{font},{size:.0f},&H00FFFFFF,&H00FFFFFF,&H00000000,&H{alpha}000000,0,0,0,0,100,100,0,0,1,0,"
-        f"{sh.get('distance_px', 1)},5,0,0,0,1\n\n"
-        "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
-    lines = [f"Dialogue: 0,{_ass_time(s)},{_ass_time(e)},Cap,,0,0,0,,{{\\pos({W / 2:.0f},{y:.0f})\\blur{sh.get('blur_px', 0) / 3:.1f}}}"
-             + t.replace("\n", "\\N") for s, e, t in cues]
-    Path(path).write_text(head + "\n".join(lines) + "\n", encoding="utf-8")
+    events = []
+    for n, (cues, look) in enumerate(tracks):
+        if not look:
+            continue
+        size = look["size_px_at_1080w"] * W / 1080
+        sh = look.get("shadow") or {"opacity": 0, "distance_px": 0}
+        alpha = format(int(255 * (1 - sh["opacity"])), "02X")
+        bold = -1 if look.get("weight", "").lower() in ("bold", "semibold", "heavy", "black") else 0
+        spacing = look.get("tracking_px", 0) * W / 1080
+        head += (f"Style: Cap{n},{look.get('font_fallback', 'Inter')},{size:.0f},&H00FFFFFF,&H00FFFFFF,&H00000000,"
+                 f"&H{alpha}000000,{bold},0,0,0,100,100,{spacing:.1f},0,1,0,{sh.get('distance_px', 1)},5,0,0,0,1\n")
+        y = H * look["center_y_pct"] / 100
+        events += [f"Dialogue: 0,{_ass_time(s)},{_ass_time(e)},Cap{n},,0,0,0,,"
+                   f"{{\\pos({W / 2:.0f},{y:.0f})\\blur{sh.get('blur_px', 0) / 3:.1f}}}" + t.replace("\n", "\\N")
+                   for s, e, t in cues]
+    head += "\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    Path(path).write_text(head + "\n".join(events) + "\n", encoding="utf-8")
 
 
 def _fill(W, H, z=1.0):
@@ -50,7 +57,11 @@ def render(out, plan, src_info, style, cues=None, broll=None, title_card=None, m
     inputs, fc, vlabels = [], [], []
     for k, c in enumerate(plan.clips):
         inputs += ["-ss", f"{c.src_in:.4f}", "-t", f"{c.src_out - c.src_in:.4f}", "-i", str(src_info.path)]
-        fc.append(f"[{k}:v]setpts=PTS-STARTPTS,fps={fps},{_fill(W, H, c.scale / 100)}[v{k}]")
+        shift = ""
+        if c.pos_y:   # split screen: speaker moved up (negative = up), rest padded
+            dy = int(abs(c.pos_y) * H)
+            shift = f",crop={W}:{H - dy}:0:{dy},pad={W}:{H}:0:0" if c.pos_y < 0 else f",crop={W}:{H - dy}:0:0,pad={W}:{H}:0:{dy}"
+        fc.append(f"[{k}:v]setpts=PTS-STARTPTS,fps={fps},{_fill(W, H, c.scale / 100)}{shift}[v{k}]")
         vlabels.append(f"[v{k}]")
         if src_info.has_audio:
             fc.append(f"[{k}:a]asetpts=PTS-STARTPTS[a{k}]")
@@ -68,8 +79,20 @@ def render(out, plan, src_info, style, cues=None, broll=None, title_card=None, m
         else:
             inputs += ["-i", p["file"]]
             src = f"[{idx}:v]trim=start={p.get('src_in', 0):.3f}:duration={d:.3f},fps={fps},"
-        fc.append(f"{src}setpts=PTS-STARTPTS+{a:.3f}/TB,{_fill(W, H)}[b{j}]")
-        fc.append(f"{cur}[b{j}]overlay=enable='between(t,{a:.3f},{a + d:.3f})':eof_action=pass[o{j}]")
+        src += f"setpts=PTS-STARTPTS+{a:.3f}/TB"
+        layout, y = p.get("layout") or "full", 0
+        if layout == "fit_blur":   # wide footage fitted to width over a blurred, filled copy
+            blur = style["broll"].get("blur", 60) * W // 1080 // 3
+            fc.append(f"{src},split[bb{j}][bf{j}]")
+            fc.append(f"[bb{j}]{_fill(W, H)},boxblur={max(2, blur)}:2[bbg{j}]")
+            fc.append(f"[bf{j}]scale={W}:-2,setsar=1[bfg{j}]")
+            fc.append(f"[bbg{j}][bfg{j}]overlay=(W-w)/2:(H-h)/2[b{j}]")
+        elif layout == "split":    # bottom half
+            fc.append(f"{src},scale={W}:{H // 2}:force_original_aspect_ratio=increase,crop={W}:{H // 2},setsar=1[b{j}]")
+            y = H // 2
+        else:
+            fc.append(f"{src},{_fill(W, H)}[b{j}]")
+        fc.append(f"{cur}[b{j}]overlay=x=0:y={y}:enable='between(t,{a:.3f},{a + d:.3f})':eof_action=pass[o{j}]")
         cur = f"[o{j}]"
         idx += 1
     if title_card:
@@ -83,7 +106,7 @@ def render(out, plan, src_info, style, cues=None, broll=None, title_card=None, m
         idx += 1
     if cues:
         ass = Path(workdir or Path(out).parent) / (Path(out).stem + ".ass")
-        write_ass(cues, style["caption_look"], W, H, ass)
+        write_ass(cues, W, H, ass)
         esc = str(ass).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
         fc.append(f"{cur}ass='{esc}'[vout]")
         cur = "[vout]"

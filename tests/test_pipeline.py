@@ -92,7 +92,8 @@ def media(tmp_path_factory):
     srt = d / "precut.srt"
     srt.write_text("1\n00:00:00,500 --> 00:00:03,000\nIf you're not failing you're not trying.\n\n"
                    "2\n00:00:05,000 --> 00:00:08,000\nI made some six figure mistakes\n\n"
-                   "3\n00:00:10,000 --> 00:00:12,000\nBut I'm telling you it's possible.\n")
+                   "3\n00:00:08,100 --> 00:00:09,600\nWe got 29,000 affiliates.\n\n"
+                   "4\n00:00:10,000 --> 00:00:12,000\nBut I'm telling you it's possible.\n")
     return d
 
 
@@ -100,7 +101,7 @@ def _check_xml(path, expect_tracks):
     root = ET.parse(path).getroot()
     seq = root.find("sequence")
     assert seq.find("rate/timebase").text == "24" and seq.find("rate/ntsc").text == "TRUE"
-    assert len(seq.findall("media/video/track")) == 3
+    assert len(seq.findall("media/video/track")) == 4
     for kind, n in expect_tracks.items():
         assert sum(1 for t in seq.findall(f"media/{kind}/track") if t.find("clipitem") is not None) == n
     for ci in seq.iter("clipitem"):
@@ -128,43 +129,90 @@ def test_style01_end_to_end(media, tmp_path):
     assert title_luma(plan["hook_end"] + 1.0) < 240     # and gone after it
 
 
-def test_style02_slots_placeholders_and_fill(media, tmp_path):
+def test_style02_slots_layouts_counters_and_fill(media, tmp_path):
     main(["edit", str(media / "clip.mp4"), "--style", "style-02-broll-story", "--srt", str(media / "precut.srt"),
-          "--broll-dir", str(media / "broll"), "--music", str(media / "music.mp3"), "--out", str(tmp_path), "--preview"])
+          "--broll-dir", str(media / "broll"), "--music", str(media / "music.mp3"), "--title-card", str(media / "title.png"),
+          "--out", str(tmp_path), "--preview"])
     out = tmp_path / "clip"
     plan = json.loads((out / "clip_plan.json").read_text())
     assert plan["mode"] == "none"
-    assert len(plan["clips"]) >= 2 and {c["scale"] for c in plan["clips"]} == {100, 112}   # punch-ins
+    assert {c["scale"] for c in plan["clips"]} == {100, 115}                               # punch-ins
     assert (out / "clip_captions.srt").read_text() == (media / "precut.srt").read_text()  # client SRT untouched
     assert probe(out / "clip_preview.mp4").width == 540                                    # fast draft
 
-    slots = json.loads((out / "slots.json").read_text())
-    assert [s["id"] for s in slots] == ["B01", "B02"]
-    b1, b2 = slots
-    assert Path(b1["file"]).name == "six-figure-mistakes-money.mp4" and "mistakes" in b1["keywords"]
-    assert b1["start"] >= plan["hook_end"]                       # never over the hook
-    assert b2["file"] is None and (out / "placeholders" / "B02.png").exists()
-    seq = _check_xml(out / "clip.xml", {"video": 2, "audio": 4})
+    slots = {s["id"]: s for s in json.loads((out / "slots.json").read_text())}
+    assert set(slots) == {"B01", "B02", "G01"}
+    b1, b2, g1 = slots["B01"], slots["B02"], slots["G01"]
+    assert b1["start"] < plan["hook_end"] and b1["layout"] == "split" and b1["file"] is None
+    assert Path(b2["file"]).name == "six-figure-mistakes-money.mp4" and "mistakes" in b2["keywords"]
+    assert g1["type"] == "counter" and g1["number"] == "29,000" and g1["label"] == "affiliates"
+    assert Path(g1["file"]).exists() and b2["start"] + b2["duration"] <= g1["start"]
+    assert (out / "placeholders" / "B01.png").exists()
+
+    seq = _check_xml(out / "clip.xml", {"video": 4, "audio": 4})
+    v1, v2, v3, v4 = seq.findall("media/video/track")
+    # speaker moved to the top half only while the split-screen slot is on
+    moved = [c for c in v1.findall("clipitem") if c.find(".//parameter[parameterid='center']") is not None]
+    assert moved and all(int(c.find("start").text) >= round(b1["start"] * 23.976) - 1 for c in moved)
+    assert [c.find("name").text for c in v2.findall("clipitem")] == ["six-figure-mistakes-money.mp4"]  # blurred bg
+    assert v2.find(".//effect[name='Gaussian Blur']") is not None
+    assert [c.find("name").text for c in v3.findall("clipitem")] == ["B01.png", "six-figure-mistakes-money.mp4", "G01.mp4"]
+    assert v4.find("clipitem") is not None                                                # name tag after the hook
+    assert int(v4.find("clipitem/start").text) == round(plan["hook_end"] * 23.976)
     names = [m.find("name").text for m in seq.findall("marker")]
-    assert names[0].startswith("B01 six-figure") and names[1].startswith("B02 EMPTY")
-    v2 = [c.find("name").text for c in seq.findall("media/video/track")[1].findall("clipitem")]
-    assert v2 == ["six-figure-mistakes-money.mp4", "B02.png"]
+    assert any(n.startswith("B01 EMPTY") for n in names) and len(names) == 3
 
     # editor drops a file named after the slot, then runs `fill`
-    shutil.copy(media / "broll" / "telling-crowd.png", out / "broll" / "B02.png")
+    shutil.copy(media / "broll" / "telling-crowd.png", out / "broll" / "B01.png")
     main(["fill", str(out)])
-    slots = json.loads((out / "slots.json").read_text())
-    assert slots[1]["source"] == "dropped" and slots[0]["file"].endswith("six-figure-mistakes-money.mp4")
+    slots = {s["id"]: s for s in json.loads((out / "slots.json").read_text())}
+    assert slots["B01"]["source"] == "dropped" and slots["B02"]["file"].endswith("six-figure-mistakes-money.mp4")
     seq = ET.parse(out / "clip.xml").getroot().find("sequence")
     assert all("EMPTY" not in m.find("name").text for m in seq.findall("marker"))
 
     # editor overrides a slot by typing a library name into slots.json
-    slots[0]["file"] = "telling-crowd"
-    (out / "slots.json").write_text(json.dumps(slots))
-    (out / "broll" / "B02.png").unlink()
+    lst = json.loads((out / "slots.json").read_text())
+    next(s for s in lst if s["id"] == "B02")["file"] = "telling-crowd"
+    (out / "slots.json").write_text(json.dumps(lst))
+    (out / "broll" / "B01.png").unlink()
     main(["fill", str(out)])
-    slots = json.loads((out / "slots.json").read_text())
-    assert Path(slots[0]["file"]).name == "telling-crowd.png" and slots[0]["source"] == "label"
+    slots = {s["id"]: s for s in json.loads((out / "slots.json").read_text())}
+    assert Path(slots["B02"]["file"]).name == "telling-crowd.png" and slots["B02"]["source"] == "label"
+
+
+def test_chunk_captions_keep_phrases_and_emphasise_key_ones():
+    from autoedit.captions import build_chunks
+    ws = W("We had a competition where the top ten could win a session with Alex and then anyone who "
+           "referred ten people got a bonus chapter for free. 29,000 affiliates in six weeks.", 0, 0.3)
+    normal, strong = build_chunks(ws, STYLE2["captions"])
+    chunks = [c[2] for c in sorted(normal + strong)]
+    assert "the top ten" in chunks and "for free" in chunks and "29,000 affiliates" in [c[2] for c in strong]
+    assert all(1 <= len(c.split()) <= 3 for c in chunks)
+    assert 0 < len(strong) <= round(0.3 * len(chunks))
+    em = sorted(strong)
+    assert all(b[0] >= a[1] for a, b in zip(em, em[1:]))     # never two emphasis chunks back to back
+    allc = sorted(normal + strong)
+    assert all(b[0] >= a[1] - 1e-6 for a, b in zip(allc, allc[1:]))   # one chunk on screen at a time
+
+
+def test_style02_restyled_captions_two_tracks(media, tmp_path):
+    main(["edit", str(media / "clip.mp4"), "--style", "style-02-broll-story", "--srt", str(media / "precut.srt"),
+          "--restyle-captions", "--no-placeholders", "--out", str(tmp_path)])
+    out = tmp_path / "clip"
+    assert (out / "clip_captions.srt").exists() and (out / "clip_captions_emphasis.srt").exists()
+    from autoedit.srt import read_srt
+    cues = read_srt(out / "clip_captions.srt") + read_srt(out / "clip_captions_emphasis.srt")
+    g1 = next(s for s in json.loads((out / "slots.json").read_text()) if s["type"] == "counter")
+    assert cues and not any(s < g1["start"] + g1["duration"] - 0.01 and e > g1["start"] + 0.01 for s, e, _ in cues)
+
+
+def test_counter_graphic_counts_up(tmp_path):
+    from autoedit.graphics import fmt, make_counter, parse_number
+    assert parse_number("29,000") == (29000, "", "", True) and parse_number("$100k")[0] == 100000
+    assert fmt(5142.4, "", "", True) == "5,142" and fmt(100000, "$", "k", False) == "$100k"
+    f = make_counter("29,000", "affiliates", 2.0, tmp_path / "c.mp4", 540, 960, 30)
+    info = probe(f)
+    assert info.width == 540 and abs(info.duration - 2.0) < 0.1
 
 
 def test_plan_slots_without_library():

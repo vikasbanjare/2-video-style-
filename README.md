@@ -20,7 +20,7 @@ music folder ──────────────┘                     o
 | ID | Name | What it is | Status |
 |---|---|---|---|
 | `style-01-raw-captions` | **Raw Captions** | Caption-only talking head. Punchline cold-open + title card, tight jump cuts, big centred line-by-line captions, censored swears, quiet music bed, no b-roll, no zooms. | Learned from sample `0001.mp4` — [`STYLE_GUIDE.md`](styles/style-01-raw-captions/STYLE_GUIDE.md) |
-| `style-02-broll-story` | **B-Roll Story** | Pre-cut podcast clip + client SRT, b-roll from client library (no stock), punch-in zooms, music. | Mechanics built; spacing/zoom numbers are placeholders until its reference video is analysed — [`STYLE_GUIDE.md`](styles/style-02-broll-story/STYLE_GUIDE.md) |
+| `style-02-broll-story` | **B-Roll Story** | Fast podcast clip: split-screen hook, guest name tag, re-cut/punch-in every ~1.5 s, client b-roll on the spoken noun (wide footage fitted over a blurred copy), count-up number graphics, 1-3 word captions with bold key phrases. | Learned from sample #2 — [`STYLE_GUIDE.md`](styles/style-02-broll-story/STYLE_GUIDE.md) |
 
 Each style is a `style.json` (every number the pipeline uses) plus a
 `STYLE_GUIDE.md` (how that editor thinks). New styles are new folders.
@@ -88,6 +88,13 @@ Name files by what they show: `smash-piggy-bank.mp4`, `office/team-meeting-lapto
 `tags.json` (`{"IMG_0412.MOV": ["gym", "squat"]}`), type a `"desc"` in
 `catalog.json`, or run `describe`.
 
+### Number graphics (Style 02)
+
+Numbers ≥ 1,000 in the transcript ("29,000 affiliates") become `G01`, `G02`…
+slots with a generated count-up clip (`output/<clip>/graphics/G01.mp4`, rendered
+by ffmpeg, no plugins). B-roll slots are planned around them, captions are
+hidden while they are on screen, and one near the end runs to the end.
+
 ## Keeping AI tokens low
 
 Everything except `describe` and `--ai` is plain code with no tokens. When AI
@@ -127,20 +134,22 @@ sheets. On the Style 01 sample it reproduces the hand measurements: cuts at
 Common options: `--style`, `--mode none|tight` (pre-cut vs. cut pauses/fillers/retakes),
 `--hook A-B` (tight: move a line to the front), `--hook-end S` (pre-cut: where the hook ends),
 `--title-card PNG` (transparent full-frame PNG during the hook), `--music` / `--music-dir`,
-`--broll-dir`, `--broll-plan JSON`, `--ai`, `--no-placeholders`, `--no-captions`,
+`--title-at A-B` (name tag timing), `--broll-dir`, `--broll-plan JSON`, `--ai`, `--no-placeholders`,
+`--no-captions`, `--restyle-captions` (build the style's captions even when a client SRT exists),
 `--preview [fast|full]` (fast = 540×960 draft).
 
 ## The Premiere sequence
 
 | Track | Content |
 |---|---|
-| V1 | talking head, cut, Scale per segment (punch-ins) |
-| V2 | b-roll + placeholder slates for empty slots |
-| V3 | title card (Cross Dissolve in/out) |
+| V1 | talking head, cut, Scale per segment (punch-ins), moved to the top half during split screen |
+| V2 | blurred, filled copies under fitted wide b-roll |
+| V3 | b-roll, count-up number graphics, placeholder slates for empty slots |
+| V4 | title card / name tag (Cross Dissolve in/out) |
 | A1/A2 | talking-head audio |
 | A3/A4 | music at the style's gain, Cross Fade in/out |
 | markers | one per b-roll slot (filled file or EMPTY + search words) |
-| captions | from `_captions.srt` (client SRT passed through untouched on pre-cut jobs) |
+| captions | `_captions.srt` (+ `_captions_emphasis.srt` for Style 02, one Track Style each); a client SRT is passed through untouched |
 
 ## Speed (measured, 4-core container, 60 s 1080×1920 clip)
 
@@ -169,6 +178,10 @@ zooms, title-card visibility, and the AI picker's prompt size and validation
 - XML/JSX checked structurally and via ffmpeg renders, not yet opened in
   Premiere here: confirm on the first real clip that Scale, transitions,
   markers and the stereo audio pair import as expected.
+- Split screen uses Basic Motion "center" (assumed ±1 = frame edge,
+  `XmlWriter.CENTER_EDGE`), Crop and Gaussian Blur filters from the FCP7 XML
+  vocabulary. If the speaker lands in the wrong place or the blur is missing
+  after import, that constant / filter name is the one thing to change.
 - `describe` / `--ai` are tested with a mocked client only; the first real run
   will show whether the descriptions are useful enough.
 - ExtendScript is being replaced by UXP in newer Premiere versions; if the JSX

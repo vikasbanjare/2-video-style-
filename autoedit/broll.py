@@ -49,7 +49,36 @@ def content_words(words):
 
 
 # ---------------------------------------------------------------- 1. where
-def plan_slots(words, duration, bcfg, hook_end=0.0):
+def plan_counters(words, duration, gcfg, hook_end=0.0):
+    """Slots for count-up number graphics: big numbers said after the hook.
+    The words after the number (up to the sentence end) become the label."""
+    from .graphics import parse_number
+    out = []
+    for i, w in enumerate(words):
+        p = parse_number(w["w"])
+        if not p or p[0] < gcfg.get("min_value", 1000) or w["s"] < hook_end:
+            continue
+        if out and w["s"] < out[-1]["start"] + out[-1]["duration"]:
+            continue
+        label = []
+        for x in words[i + 1:i + 5]:
+            label.append(re.sub(r"[.,!?;:]", "", x["w"]))
+            if x["w"][-1:] in ".,!?;:":
+                break
+        start = max(0.0, w["s"] - gcfg.get("lead", 0.05))
+        dur = min(max(gcfg.get("min_len", 1.8), (words[min(i + len(label), len(words) - 1)]["e"] - start) + 0.6),
+                  gcfg.get("max_len", 3.0))
+        if duration - (start + dur) < gcfg.get("run_to_end_within", 3.0):
+            dur = duration - start            # a number near the end becomes the closing shot
+        dur = min(dur, duration - start)
+        out.append({"id": f"G{len(out) + 1:02d}", "type": "counter", "start": round(start, 3), "duration": round(dur, 3),
+                    "phrase": " ".join([w["w"]] + label), "keywords": [], "label": " ".join(label),
+                    "number": w["w"].strip(".,!?;:"), "file": None, "src_in": 0.0, "source": "graphic",
+                    "layout": "full"})
+    return out
+
+
+def plan_slots(words, duration, bcfg, hook_end=0.0, reserved=()):
     start_after = max(bcfg.get("start_after", 1.5), hook_end if bcfg.get("skip_hook", True) else 0.0)
     end_before = duration - bcfg.get("end_before", 1.5)
     look = bcfg.get("lookahead", 2.5)
@@ -75,14 +104,23 @@ def plan_slots(words, duration, bcfg, hook_end=0.0):
         start = max(start_after, best["s"] - lead)
         ends = [x["e"] for x in words if start + bcfg["min_len"] <= x["e"] <= start + bcfg["max_len"]]
         end = min(end_before, ends[-1] if ends else start + bcfg["min_len"])
+        clash = next((r for r in reserved if start < r["start"] + r["duration"] + bcfg["min_gap"] * 0.5
+                      and end > r["start"] - bcfg["min_gap"] * 0.5), None)
+        if clash and clash["start"] > start:       # shorten to end before the number graphic
+            ends = [x["e"] for x in words if start + bcfg["min_len"] * 0.8 <= x["e"] <= clash["start"] - 0.3]
+            end = ends[-1] if ends else start
+        if clash and (clash["start"] <= start or end - start < bcfg["min_len"] * 0.8):
+            t = clash["start"] + clash["duration"] + bcfg["min_gap"] * 0.5
+            continue
         if end - start >= bcfg["min_len"] * 0.8:
             inside = [x for x in words if start - 0.01 <= x["s"] < end]
             kw = content_words(inside)[:3]
             slots.append({"id": f"B{len(slots) + 1:02d}", "start": round(start, 3), "duration": round(end - start, 3),
                           "phrase": " ".join(x["w"] for x in inside), "keywords": kw,
-                          "label": " ".join(kw[:2]) or "b-roll", "file": None, "src_in": 0.0, "source": None})
+                          "label": " ".join(kw[:2]) or "b-roll", "file": None, "src_in": 0.0, "source": None,
+                          "type": "broll", "layout": None})
             covered += end - start
-            if covered / max(duration, 0.01) >= bcfg.get("max_coverage", 0.45):
+            if (covered + sum(r["duration"] for r in reserved)) / max(duration, 0.01) >= bcfg.get("max_coverage", 0.45):
                 break
         t = end + bcfg["min_gap"]
     for w in words:
@@ -146,7 +184,7 @@ def fill_slots(slots, library, clip_broll_dir=None, ai_picker=None):
             s["source"] = s.get("source") or "manual"
         if s.get("file"):
             used.add(s["file"])
-    open_slots = [s for s in slots if not s.get("file")]
+    open_slots = [s for s in slots if not s.get("file") and s.get("type") != "counter"]
     if open_slots and library and ai_picker:
         picks = ai_picker(open_slots, [i for i in library if i["file"] not in used])
         for s in open_slots:
@@ -155,7 +193,7 @@ def fill_slots(slots, library, clip_broll_dir=None, ai_picker=None):
                 s.update(file=f, source="ai")
                 used.add(f)
     for s in slots:
-        if not s.get("file") and library:
+        if not s.get("file") and library and s.get("type") != "counter":
             item, score = keyword_match(s, library, used)
             if item:
                 s.update(file=item["file"], source=f"keywords({score:.1f})")
@@ -163,7 +201,7 @@ def fill_slots(slots, library, clip_broll_dir=None, ai_picker=None):
     return slots
 
 
-def to_placements(slots):
+def to_placements(slots, fit_wide=True):
     """Filled slots -> placements with media info (duration clipped to the source)."""
     out = []
     for s in slots:
@@ -172,6 +210,9 @@ def to_placements(slots):
         p = dict(s)
         p["info"] = probe(p["file"])
         p["still"] = Path(p["file"]).suffix.lower() in STILL_EXT
+        if not p.get("layout"):   # horizontal footage: fit width over a blurred copy (never crop it to bits)
+            wide = p["info"].width > p["info"].height * 1.1
+            p["layout"] = "fit_blur" if wide and fit_wide else "full"
         if not p["still"] and p["info"].duration:
             p["duration"] = min(p["duration"], p["info"].duration - p.get("src_in", 0.0))
         out.append(p)

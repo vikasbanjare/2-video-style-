@@ -1,9 +1,11 @@
 """Writes the edit as Final Cut Pro 7 XML (xmeml v4), which Premiere Pro imports
 natively via File > Import. Track layout:
 
-  V1  talking head (cuts + punch-in scale)    A1/A2  talking-head audio (L/R)
-  V2  b-roll                                  A3/A4  music bed (L/R, fixed gain)
-  V3  title card (hook only, dissolves)
+  V1  talking head (cuts, punch-in scale,     A1/A2  talking-head audio (L/R)
+      moved to the top half for split screen) A3/A4  music bed (L/R, fixed gain)
+  V2  blurred background copies (wide b-roll)
+  V3  b-roll, number graphics, placeholders
+  V4  title card / name tag (dissolves)
 Captions travel separately as an .srt (Premiere caption track).
 """
 from pathlib import Path
@@ -62,12 +64,36 @@ class XmlWriter:
                 f"<duration>{dur}</duration>{self.rate()}<start>{start}</start><end>{end}</end>"
                 f"<in>{i}</in><out>{o}</out>{self.file_el(info, still)}{st}{filters}{links}</clipitem>")
 
-    @staticmethod
-    def motion(scale):
+    # Basic Motion "center" units: +-CENTER_EDGE = frame edge. Assumed 1.0 (FCP7 normalised
+    # coordinates); not verified in Premiere yet - see README "Not verified yet".
+    CENTER_EDGE = 1.0
+
+    @classmethod
+    def motion(cls, scale, pos_y=0.0):
+        center = ""
+        if pos_y:
+            center = ("<parameter><parameterid>center</parameterid><name>Center</name><value>"
+                      f"<horiz>0</horiz><vert>{pos_y * 2 * cls.CENTER_EDGE:.4f}</vert></value></parameter>")
         return ("<filter><effect><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory>"
                 "<effecttype>motion</effecttype><mediatype>video</mediatype><parameter authoringApp=\"PremierePro\">"
                 f"<parameterid>scale</parameterid><name>Scale</name><valuemin>0</valuemin><valuemax>1000</valuemax>"
-                f"<value>{scale:.2f}</value></parameter></effect></filter>")
+                f"<value>{scale:.2f}</value></parameter>{center}</effect></filter>")
+
+    @staticmethod
+    def blur(radius):
+        return ("<filter><effect><name>Gaussian Blur</name><effectid>Gaussian Blur</effectid>"
+                "<effectcategory>Blur &amp; Sharpen</effectcategory><effecttype>filter</effecttype>"
+                "<mediatype>video</mediatype><parameter><parameterid>blurriness</parameterid><name>Blurriness</name>"
+                f"<value>{radius}</value></parameter></effect></filter>")
+
+    @staticmethod
+    def crop(top=0.0, bottom=0.0):
+        return ("<filter><effect><name>Crop</name><effectid>crop</effectid><effectcategory>motion</effectcategory>"
+                "<effecttype>motion</effecttype><mediatype>video</mediatype>"
+                + "".join(f"<parameter><parameterid>{k}</parameterid><name>{k.title()}</name><valuemin>0</valuemin>"
+                          f"<valuemax>100</valuemax><value>{v:.2f}</value></parameter>"
+                          for k, v in (("left", 0), ("right", 0), ("top", top), ("bottom", bottom)))
+                + "</effect></filter>")
 
     @staticmethod
     def level(db):
@@ -113,24 +139,37 @@ def write_xml(path, name, plan, src_info, style, broll=None, title_card=None, mu
             f"<link><linkclipref>{cid}</linkclipref><mediatype>{mt}</mediatype><trackindex>{ti}</trackindex>"
             f"<clipindex>{k + 1}</clipindex></link>"
             for cid, mt, ti in zip(ids, ["video", "audio", "audio"], [1, 1, 2]))
-        v1.append(x.clip(src_info, c.rec_in, c.rec_out, c.src_in, filters=x.motion(base * c.scale / 100),
+        v1.append(x.clip(src_info, c.rec_in, c.rec_out, c.src_in, filters=x.motion(base * c.scale / 100, c.pos_y),
                          cid=ids[0], links=links))
         if src_info.has_audio:
             a1.append(x.clip(src_info, c.rec_in, c.rec_out, c.src_in, "audio", 1, cid=ids[1], links=links))
             a2.append(x.clip(src_info, c.rec_in, c.rec_out, c.src_in, "audio", min(2, src_info.audio_channels),
                              cid=ids[2], links=links))
 
-    v2 = []
+    v2, v3 = [], []    # V2: blurred backgrounds for fitted wide b-roll, V3: b-roll / graphics / placeholders
     for p in broll or []:
-        info = p["info"]
-        v2.append(x.clip(info, p["start"], p["start"] + p["duration"], p.get("src_in", 0.0),
-                         filters=x.motion(fill_scale(info, W, H)), still=p["still"]))
+        info, a, b = p["info"], p["start"], p["start"] + p["duration"]
+        layout = p.get("layout") or "full"
+        if layout == "fit_blur":
+            v2.append(x.clip(info, a, b, p.get("src_in", 0.0), still=p["still"],
+                             filters=x.motion(fill_scale(info, W, H)) + x.blur(style["broll"].get("blur", 60))))
+            v3.append(x.clip(info, a, b, p.get("src_in", 0.0), still=p["still"],
+                             filters=x.motion(W / info.width * 100 if info.width else 100)))
+        elif layout == "split":   # bottom half; the speaker is moved to the top half on V1
+            sc = max(W / info.width, H / 2 / info.height) * 100 if info.width else 100
+            hs = info.height * sc / 100 if info.height else H / 2
+            cut = max(0.0, (hs - H / 2) / hs * 50)
+            v3.append(x.clip(info, a, b, p.get("src_in", 0.0), still=p["still"],
+                             filters=x.motion(sc, 0.25) + x.crop(cut, cut)))
+        else:
+            v3.append(x.clip(info, a, b, p.get("src_in", 0.0), still=p["still"],
+                             filters=x.motion(fill_scale(info, W, H))))
 
-    v3 = []
+    v4 = []
     if title_card:
         tc_info, tc_in, tc_out = title_card
         fd = style["title_card"].get("fade_duration", 0.25)
-        v3 = [x.transition(tc_in, tc_in + fd, "start"),
+        v4 = [x.transition(tc_in, tc_in + fd, "start"),
               x.clip(tc_info, tc_in, tc_out, 0.0, filters=x.motion(fill_scale(tc_info, W, H)), still=True),
               x.transition(tc_out - fd, tc_out, "end")]
 
@@ -146,7 +185,7 @@ def write_xml(path, name, plan, src_info, style, broll=None, title_card=None, mu
     def track(items):
         return f"<track>{''.join(items)}</track>"
 
-    video = "".join(track(t) for t in (v1, v2, v3))
+    video = "".join(track(t) for t in (v1, v2, v3, v4))
     audio = "".join(track(t) for t in (a1, a2, m1, m2) if t) or track([])
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n<xmeml version="4">'

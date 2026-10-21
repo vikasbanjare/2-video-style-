@@ -16,13 +16,13 @@ import numpy as np
 
 from .media import probe
 
-GW, GH = 180, 320  # analysis resolution (9:16)
+GW, GH = 270, 480  # analysis resolution (9:16); small 1-3 word captions need >= 270 wide
 
 
 def _gray_frames(path):
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"scale={GW}:{GH},format=gray",
                           "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
-    return np.frombuffer(raw, np.uint8).reshape(-1, GH, GW).astype(np.int16)
+    return np.frombuffer(raw, np.uint8).reshape(-1, GH, GW)
 
 
 def _text_mask(frames):
@@ -30,7 +30,7 @@ def _text_mask(frames):
     not bright skies, skin or lights."""
     bright = frames > 225
     edge = np.zeros_like(bright)
-    edge[:, :, 1:] = np.abs(np.diff(frames, axis=2)) > 70
+    edge[:, :, 1:] = np.abs(np.diff(frames.astype(np.int16), axis=2)) > 70
     edge[:, :, :-1] |= edge[:, :, 1:]
     return bright & edge
 
@@ -54,13 +54,22 @@ def _caption_band(frames):
     return int(r[0]), int(r[-1]) + 1
 
 
+def _floating_band(frames):
+    """Fallback for captions that move with the layout (split screens, b-roll):
+    the central 30-70 % of the frame, kept only if text in it changes often."""
+    a, b = int(GH * 0.30), int(GH * 0.70)
+    text = _text_mask(frames[:, a:b])
+    present = (text.mean(axis=(1, 2)) > 0.0004).mean()
+    return (a, b) if present > 0.5 else None
+
+
 def _cuts(frames, fps, band):
     m = np.ones((GH, GW), bool)
     if band:
         m[max(0, band[0] - 4):band[1] + 4, :] = False
     if len(frames) < 8:
         return []
-    d = np.array([np.abs(frames[i] - frames[i - 1])[m].mean() for i in range(1, len(frames))])
+    d = np.array([np.abs(frames[i].astype(np.int16) - frames[i - 1])[m].mean() for i in range(1, len(frames))])
     cuts = []
     for i in range(3, len(d) - 3):
         local = np.median(np.r_[d[i - 3:i], d[i + 1:i + 4]])
@@ -75,7 +84,7 @@ def _caption_events(frames, fps, band):
     w = _text_mask(frames[:, band[0]:band[1], :])
     ev = [0]
     for i in range(1, len(w)):
-        if (w[i] ^ w[i - 1]).sum() > max(40, w[i].sum() * 0.25) and i - ev[-1] > 2:
+        if (w[i] ^ w[i - 1]).sum() > max(25, w[i].sum() * 0.25) and i - ev[-1] > 2:
             ev.append(i)
     ev.append(len(w))
     out = []
@@ -84,6 +93,7 @@ def _caption_events(frames, fps, band):
         rows = np.where(f.sum(1) > 1)[0]
         lines = 0 if len(rows) == 0 else 1 + int((np.diff(rows) > 2).sum())
         out.append({"t": round(a / fps, 2), "dur": round((b - a) / fps, 2), "lines": lines,
+                    "text_h": int(np.ptp(rows)) + 1 if len(rows) else 0,
                     "width_pct": round(100 * (np.ptp(np.where(f.any(0))[0]) if f.any() else 0) / GW, 1)})
     return out
 
@@ -125,6 +135,8 @@ def analyze(video, out):
     frames = _gray_frames(video)
     band = _caption_band(frames)
     cuts = _cuts(frames, fps, band)
+    floating = band is None
+    band = band or _floating_band(frames)
     caps = _caption_events(frames, fps, band)
     shots = np.diff([0] + cuts + [info.duration]) if info.duration else np.array([])
     shown = [c for c in caps if c["lines"]]
@@ -137,10 +149,12 @@ def analyze(video, out):
                      "max": round(float(shots.max()), 2) if len(shots) else None},
         "captions": None if not band else {
             "band_y_pct": [round(100 * band[0] / GH, 1), round(100 * band[1] / GH, 1)],
+            "position": "moves with layout" if floating else "fixed band",
             "changes": len(shown),
             "dur_median": round(float(np.median([c["dur"] for c in shown])), 2) if shown else None,
             "max_lines": max((c["lines"] for c in shown), default=0),
             "max_width_pct": max((c["width_pct"] for c in shown), default=0),
+            "text_heights": sorted({c["text_h"] for c in shown if c["lines"] == 1}),
             "events": caps},
         "audio": _audio(video),
     }
@@ -152,7 +166,8 @@ def analyze(video, out):
           f"(min {rep['shot_len']['min']}, max {rep['shot_len']['max']})",
           f"- cut times: {', '.join(map(str, cuts)) or 'none'}",
           (f"- captions: band {c['band_y_pct'][0]}–{c['band_y_pct'][1]} % from top, {c['changes']} changes, "
-           f"median {c['dur_median']} s on screen, up to {c['max_lines']} lines, {c['max_width_pct']} % wide")
+           f"median {c['dur_median']} s on screen, up to {c['max_lines']} lines, {c['max_width_pct']} % wide, "
+          f"{c['position']}, text heights (px@480) {c['text_heights']}")
           if c else "- captions: none detected",
           f"- audio: {rep['audio'].get('lufs')} LUFS (LRA {rep['audio'].get('lra')}), floor "
           f"{rep['audio'].get('bed_below_speech_db')} dB under speech, "

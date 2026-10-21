@@ -17,7 +17,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from . import broll as broll_mod
-from .captions import build_cues
+from .captions import build_chunks, build_cues
+from .edit_plan import Clip
 from .edit_plan import build_plan
 from .media import probe
 from .srt import srt_to_words, write_srt
@@ -64,6 +65,38 @@ def _srt_for(video, args):
     return Path(p) if p and Path(p).exists() else None
 
 
+def hide_during(cues, spans):
+    """Drop caption cues mostly inside the spans, trim the ones that overlap an edge."""
+    out = []
+    for s, e, t in cues:
+        for a, b in spans:
+            if s < b and e > a:
+                if min(e, b) - max(s, a) > 0.5 * (e - s):
+                    s = e  # mostly covered: drop
+                elif s < a:
+                    e = min(e, a)
+                else:
+                    s = max(s, b)
+        if e - s > 0.05:
+            out.append((s, e, t))
+    return out
+
+
+def apply_split_screen(plan, splits):
+    """Cut V1 at split-screen b-roll edges and move those pieces to the top half."""
+    for p in splits:
+        a, b = p["start"], p["start"] + p["duration"]
+        out = []
+        for c in plan.clips:
+            edges = sorted({c.rec_in, c.rec_out} | {t for t in (a, b) if c.rec_in < t < c.rec_out})
+            for x, y in zip(edges, edges[1:]):
+                piece = Clip(c.src_in + x - c.rec_in, c.src_in + y - c.rec_in, x, c.scale, c.pos_y)
+                if a - 1e-6 <= x and y <= b + 1e-6:
+                    piece.pos_y = -0.25
+                out.append(piece)
+        plan.clips = out
+
+
 def edit_one(video, style, args, music_file=None, slots_override=None, log=print):
     video = Path(video).resolve()
     src = probe(video)
@@ -81,22 +114,45 @@ def edit_one(video, style, args, music_file=None, slots_override=None, log=print
     out.mkdir(parents=True, exist_ok=True)
     W, H = style["sequence"]["width"], style["sequence"]["height"]
 
-    cues = None
-    if style["captions"].get("enabled") and not args.no_captions:
-        cues = build_cues(plan.words, style["captions"], plan.hook_end,
-                          style["hook"].get("caption_mode", "static"), style["hook"].get("gap_after", 0.2))
-        write_srt(cues, out / f"{video.stem}_captions.srt")
+    ccfg = style["captions"]
+    caption_tracks = []        # [(cues, look)] -> one SRT + one Premiere caption track each
+    if ccfg.get("enabled") and not args.no_captions and not (
+            srt and mode == "none" and ccfg.get("prefer_client_srt") and not args.restyle_captions):
+        if ccfg.get("reveal") == "chunk":
+            normal, strong = build_chunks(plan.words, ccfg)
+            caption_tracks = [(normal, style["caption_look"]), (strong, style.get("caption_look_emphasis"))]
+            write_srt(normal, out / f"{video.stem}_captions.srt")
+            write_srt(strong, out / f"{video.stem}_captions_emphasis.srt")
+        else:
+            cues = build_cues(plan.words, ccfg, plan.hook_end,
+                              style["hook"].get("caption_mode", "static"), style["hook"].get("gap_after", 0.2))
+            caption_tracks = [(cues, style["caption_look"])]
+            write_srt(cues, out / f"{video.stem}_captions.srt")
     elif mode == "none" and srt:
         shutil.copy(srt, out / f"{video.stem}_captions.srt")   # client's SRT, untouched
 
     # ---- b-roll: where (slots), then what (manual > dropped files > AI > keywords)
-    slots = []
+    gcfg = style.get("graphics", {})
     if slots_override is not None:
         slots = slots_override
     elif args.broll_plan:
         slots = broll_mod.load_plan(args.broll_plan)
-    elif style["broll"].get("enabled"):
-        slots = broll_mod.plan_slots(plan.words, plan.duration, style["broll"], plan.hook_end)
+    else:
+        counters = broll_mod.plan_counters(plan.words, plan.duration, gcfg, plan.hook_end) if gcfg.get("counters") else []
+        slots = counters
+        if style["broll"].get("enabled"):
+            slots = sorted(counters + broll_mod.plan_slots(plan.words, plan.duration, style["broll"], plan.hook_end,
+                                                           reserved=counters), key=lambda s: s["start"])
+        hook_layout = style["broll"].get("hook_layout")
+        for s in slots:
+            if hook_layout and s.get("type") == "broll" and s["start"] < plan.hook_end:
+                s["layout"] = hook_layout
+    fps = int(round(float(src.fps) or 30))
+    for s in slots:   # number graphics are generated, not searched for
+        if s.get("type") == "counter" and not s.get("file"):
+            from .graphics import make_counter
+            s["file"] = str(make_counter(s["number"], s["label"], s["duration"], out / "graphics" / f"{s['id']}.mp4",
+                                         W, H, fps, gcfg))
     library = broll_mod.load_library(args.broll_dir) if args.broll_dir else []
     picker = None
     if args.ai and library:
@@ -104,21 +160,35 @@ def edit_one(video, style, args, music_file=None, slots_override=None, log=print
         picker = make_picker(args.ai_model)
     (out / "broll").mkdir(exist_ok=True)
     slots = broll_mod.fill_slots(slots, library, out / "broll", picker)
-    placements = broll_mod.to_placements(slots)
+    placements = broll_mod.to_placements(slots, style["broll"].get("fit_wide", True))
     if not args.no_placeholders:
         from .slate import make_slate
         for s in slots:
             if not s.get("file"):
                 png = make_slate(s, out / "placeholders" / f"{s['id']}.png", W, H)
-                placements.append(dict(s, file=str(png), info=probe(png), still=True, placeholder=True))
+                placements.append(dict(s, file=str(png), info=probe(png), still=True, placeholder=True,
+                                       layout=s.get("layout") if s.get("layout") == "split" else "full"))
         placements.sort(key=lambda p: p["start"])
+    apply_split_screen(plan, [p for p in placements if p.get("layout") == "split"])
+    counters = [(s["start"], s["start"] + s["duration"]) for s in slots if s.get("type") == "counter"]
+    if counters and caption_tracks:   # the number graphic is the caption: no white text on the light card
+        caption_tracks = [(hide_during(cues, counters), look) for cues, look in caption_tracks]
+        names = ["_captions.srt", "_captions_emphasis.srt"]
+        for (cues, _), name in zip(caption_tracks, names):
+            write_srt(cues, out / f"{video.stem}{name}")
     (out / "slots.json").write_text(json.dumps(slots, indent=1))
     (out / ".slots_auto.json").write_text(json.dumps(slots, indent=1))  # lets `fill` spot hand edits
 
     title = None
-    if args.title_card and plan.hook_end:
+    if args.title_card:
         tc = style["title_card"]
-        title = (probe(args.title_card), min(tc["fade_in_start"], plan.hook_end / 2), plan.hook_end)
+        if args.title_at:
+            title = (probe(args.title_card), *parse_range(args.title_at))
+        elif tc.get("at") == "after_hook":   # name tag on the guest's first shot
+            a = plan.hook_end
+            title = (probe(args.title_card), a, min(plan.duration, a + tc.get("duration", 1.5)))
+        elif plan.hook_end:
+            title = (probe(args.title_card), min(tc["fade_in_start"], plan.hook_end / 2), plan.hook_end)
 
     music = None
     if music_file and style["music"].get("enabled"):
@@ -127,6 +197,7 @@ def edit_one(video, style, args, music_file=None, slots_override=None, log=print
     from .xml_export import write_xml
     write_xml(out / f"{video.stem}.xml", f"{video.stem} - {style['name']}", plan, src, style,
               placements, title, music, slots)
+    cues = [c for track, _ in caption_tracks for c in track]
 
     filled = sum(1 for s in slots if s.get("file"))
     saved_args = {k: v for k, v in vars(args).items() if k not in ("func",)}
@@ -142,7 +213,7 @@ def edit_one(video, style, args, music_file=None, slots_override=None, log=print
 
     if args.preview:
         from .preview import render
-        render(out / f"{video.stem}_preview.mp4", plan, src, style, cues, placements, title, music, out,
+        render(out / f"{video.stem}_preview.mp4", plan, src, style, caption_tracks, placements, title, music, out,
                fast=args.preview == "fast")
     log(f"[ok] {video.name}: {plan.duration:.1f}s, {len(plan.clips)} shots, b-roll {filled}/{len(slots)} slots filled, "
         f"{len(cues or [])} caption cues -> {out}")
@@ -239,6 +310,9 @@ def main(argv=None):
         p.add_argument("--ai-model", default="claude-opus-5-5")
         p.add_argument("--no-placeholders", action="store_true", help="leave empty slots blank instead of slates")
         p.add_argument("--no-captions", action="store_true")
+        p.add_argument("--restyle-captions", action="store_true",
+                       help="build the style's captions even when the client sent an SRT")
+        p.add_argument("--title-at", help="show the title card / name tag at A-B seconds")
         p.add_argument("--preview", nargs="?", const="fast", choices=["fast", "full"],
                        help="render an MP4 preview: fast = 540x960 draft (default), full = 1080x1920")
         p.add_argument("--out", default="output")

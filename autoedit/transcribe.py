@@ -25,6 +25,18 @@ def transcribe(media_path, model_size="small", language=None):
     return words
 
 
+def merge_fragments(words):
+    """Whisper splits "$10,000" into "$10" + ",000" and "co-founder" into "co" + "-founder";
+    glue such continuation tokens back onto the previous word."""
+    out = []
+    for w in words:
+        if out and len(w["w"]) > 1 and w["w"][0] in ",-" and w["w"][1].isalnum():
+            out[-1] = dict(out[-1], w=out[-1]["w"] + w["w"], e=w["e"])
+        else:
+            out.append(w)
+    return out
+
+
 def load_or_transcribe(media_path, words_path=None, model_size="small", language=None):
     words_path = Path(words_path) if words_path else Path(str(media_path) + ".words.json")
     if words_path.exists():

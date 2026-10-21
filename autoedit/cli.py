@@ -40,15 +40,15 @@ def load_style(name):
 
 
 def get_words(video, srt=None, words=None, model="small"):
+    from .transcribe import load_or_transcribe, merge_fragments
     if words:
-        return json.loads(Path(words).read_text())
+        return merge_fragments(json.loads(Path(words).read_text()))
     if srt:
         return srt_to_words(srt)
     sib = Path(video).with_suffix(".srt")
     if sib.exists():
         return srt_to_words(sib)
-    from .transcribe import load_or_transcribe
-    return load_or_transcribe(video, model_size=model)
+    return merge_fragments(load_or_transcribe(video, model_size=model))
 
 
 def first_sentence_end(words, cap=6.0):

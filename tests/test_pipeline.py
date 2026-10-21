@@ -75,6 +75,17 @@ def test_caption_rules():
     assert any("\n" not in a and b.startswith(a + "\n") for a, b in pairs)
 
 
+def test_whisper_fragments_and_numbers_stay_whole():
+    from autoedit.transcribe import merge_fragments
+    words = merge_fragments(W("more than $10 ,000 in sales. my co -founder said. "
+                              "We'll give you a courtesy 30 days to find a new kitchen.", 0.0))
+    assert [w["w"] for w in words][2:4] == ["$10,000", "in"] and "co-founder" in [w["w"] for w in words]
+    cues = build_cues([dict(w, hook=False) for w in words], STYLE1["captions"])
+    text = " / ".join(c[2] for c in cues)
+    assert "$10,000" in text and "30 days" in text.replace("\n", " ")
+    assert not any(c[2].endswith("30") for c in cues)
+
+
 @pytest.fixture(scope="module")
 def media(tmp_path_factory):
     d = tmp_path_factory.mktemp("media")

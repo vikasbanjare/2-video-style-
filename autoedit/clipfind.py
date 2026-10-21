@@ -130,6 +130,12 @@ def find_clips(words, count=10, min_len=25.0, max_len=60.0, gap=5.0):
             c["b"] -= 1
         while c["a"] < c["b"] and weak(c["a"]) and sents[c["b"]]["e"] - sents[c["a"] + 1]["s"] >= 0.8 * min_len:
             c["a"] += 1
+        # then drop a host reaction ("Nice.", "Yeah.") at either end; done last so it never unlocks more trimming
+        short = lambda k: len(sents[k]["text"].split()) <= 2
+        while c["b"] > c["a"] and short(c["b"]):
+            c["b"] -= 1
+        while c["a"] < c["b"] and short(c["a"]):
+            c["a"] += 1
         c["start"], c["end"] = sents[c["a"]]["s"], sents[c["b"]]["e"]
         c["text"] = " ".join(x["text"] for x in sents[c["a"]:c["b"] + 1])
     for c in chosen:   # cold-open hook candidate: the most quotable sentence inside the clip

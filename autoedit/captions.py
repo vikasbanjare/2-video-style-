@@ -42,6 +42,11 @@ def _text(ws):
     return " ".join(w["t"] for w in ws)
 
 
+def _splits_number(ws, i):
+    """Penalty for breaking between a number and the word it counts ("30 | days")."""
+    return 2.0 if NUMBER.match(ws[i - 1]["t"]) and ws[i]["t"].lower() not in BREAK_BEFORE else 0.0
+
+
 def _best_split(ws, max_chars):
     """Split index for two lines: prefer a speech pause / conjunction, keep both lines
     within max_chars, mildly prefer balance. Returns None if no valid split."""
@@ -55,6 +60,7 @@ def _best_split(ws, max_chars):
         score = ws[i].get("gap_src", 0) * 10
         score += 0.6 if ws[i]["t"].lower() in CONJ else 0
         score += 0.4 if ws[i]["t"].lower() in BREAK_BEFORE else 0
+        score -= _splits_number(ws, i)
         score -= abs(len(a) - len(b)) / max_chars
         if best_score is None or score > best_score:
             best, best_score = i, score
@@ -74,6 +80,7 @@ def _pages(ws, ccfg):
     best, best_score = 1, None
     for i in range(1, len(ws)):
         score = ws[i].get("gap_src", 0) * 10 + (0.6 if ws[i]["t"].lower() in CONJ else 0)
+        score -= _splits_number(ws, i)
         score -= abs(i - len(ws) / 2) / len(ws)
         if best_score is None or score > best_score:
             best, best_score = i, score

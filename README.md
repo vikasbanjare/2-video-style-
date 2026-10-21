@@ -111,6 +111,19 @@ effort; any Claude model id works).
 
 ## Learning a new style
 
+From many references at once (local files, folders, or profile/reel URLs):
+
+```bash
+python -m autoedit learn https://www.instagram.com/<profile>/ --count 5 --name style-02 --cookies cookies.txt
+python -m autoedit learn refs/*.mp4 --name style-02
+```
+downloads with yt-dlp (Instagram needs a logged-in `cookies.txt`, and the
+environment must allow `instagram.com`, `cdninstagram.com`, `fbcdn.net`), runs
+`analyze` on each video, and writes `analysis/<name>/summary.md`: one row per
+video plus median / min / max for every rule.
+
+A single video:
+
 ```bash
 python -m autoedit analyze reference.mp4
 ```
@@ -129,6 +142,7 @@ sheets. On the Style 01 sample it reproduces the hand measurements: cuts at
 | `fill JOB_DIR` | rebuild a clip after filling slots |
 | `catalog DIR` / `describe DIR` | index / AI-describe the b-roll library |
 | `analyze VIDEO` | measure a reference edit |
+| `learn SRC...` | download (optional) + analyse many references, combined summary |
 | `transcript CLIP` | numbered sentences with times (pick a hook) |
 
 Common options: `--style`, `--mode none|tight` (pre-cut vs. cut pauses/fillers/retakes),

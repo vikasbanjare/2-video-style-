@@ -271,3 +271,16 @@ def test_ai_picker_prompt_is_small_and_validated(monkeypatch):
     prompt = sent["messages"][0]["content"]
     assert isinstance(prompt, str) and prompt.count("\nL") <= 40   # text only, shortlisted library
     assert "garage" in prompt and len(prompt) < 4000
+
+
+def test_learn_summarises_several_references(media, tmp_path):
+    from autoedit.learn import learn
+    main(["edit", str(media / "clip.mp4"), "--style", "style-01-raw-captions", "--mode", "tight",
+          "--hook", "9.0-11.6", "--out", str(tmp_path / "e"), "--preview", "full"])
+    prev = tmp_path / "e" / "clip" / "clip_preview.mp4"
+    summ = learn([str(prev), str(media / "clip.mp4")], tmp_path / "learn", log=lambda *_: None)
+    assert summ["videos"] == 2 and summ["videos_with_captions"] >= 1
+    assert set(summ["cuts_per_10s"]) == {"median", "min", "max"}
+    md = (tmp_path / "learn" / "summary.md").read_text()
+    assert "| 1 | clip_preview.mp4 |" in md and "| 2 | clip.mp4 |" in md
+    assert (tmp_path / "learn" / "01_clip_preview" / "sheet_01.jpg").exists()

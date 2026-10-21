@@ -1,3 +1,4 @@
 faster-whisper>=1.0  # only when a clip has no SRT
 anthropic            # only for `describe` / --ai
 pytest
+yt-dlp               # only for `learn` with URLs

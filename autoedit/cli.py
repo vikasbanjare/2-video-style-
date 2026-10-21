@@ -6,6 +6,7 @@
   python -m autoedit catalog BROLL_DIR                        index the b-roll library (cached)
   python -m autoedit describe BROLL_DIR                       AI-describe new library files once (optional)
   python -m autoedit analyze REF.mp4                          measure a reference edit (style learning)
+  python -m autoedit learn URL|FILE... --name ID              download + analyse many references, one summary
   python -m autoedit transcript CLIP.mp4                      numbered sentences, for picking a hook
 """
 import argparse
@@ -328,6 +329,11 @@ def main(argv=None):
     p = sub.add_parser("catalog"); p.add_argument("folder"); p.add_argument("--no-thumbs", action="store_true")
     p = sub.add_parser("describe"); p.add_argument("folder"); p.add_argument("--ai-model", default="claude-opus-5-5")
     p = sub.add_parser("analyze"); p.add_argument("video"); p.add_argument("--out")
+    p = sub.add_parser("learn", help="download (optional) + analyse several reference videos, one summary")
+    p.add_argument("sources", nargs="+", help="profile/reel URLs, video files or folders")
+    p.add_argument("--count", type=int, default=5, help="latest N posts per profile URL")
+    p.add_argument("--cookies", help="cookies.txt from a logged-in browser (Instagram needs it)")
+    p.add_argument("--name", default="new-style", help="output folder name under analysis/")
     p = sub.add_parser("transcript"); p.add_argument("video")
     p.add_argument("--srt"); p.add_argument("--words"); p.add_argument("--model", default="small")
     args = ap.parse_args(argv)
@@ -342,6 +348,12 @@ def main(argv=None):
     if args.cmd == "describe":
         from .ai import describe_library
         return describe_library(args.folder, args.ai_model)
+    if args.cmd == "learn":
+        from .learn import learn
+        out = Path("analysis") / args.name
+        learn(args.sources, out, args.count, args.cookies)
+        print((out / "summary.md").read_text())
+        return
     if args.cmd == "analyze":
         from .analyze import analyze
         out = args.out or f"analysis/{Path(args.video).stem}"

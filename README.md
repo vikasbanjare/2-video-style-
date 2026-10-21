@@ -56,6 +56,30 @@ python -m autoedit fill output/clip_017/ --preview
 #    apply the caption Track Style, review, export.
 ```
 
+## Long recording → many shorts
+
+```bash
+python -m autoedit clips episode.mp4 --style style-02-broll-story --count 10 \
+    [--srt episode.srt] [--min-len 25 --max-len 60] [--ai] [--broll-dir ...] [--music ...] [--preview]
+```
+
+1. Transcript: the episode's SRT if given, else local Whisper (cached as
+   `episode.mp4.words.json`, so it runs once per episode; a 2 h episode on CPU
+   with `--model small` takes a while — use a GPU or `--model base` to speed up).
+2. Every run of whole sentences that fits the style's length (`clips` in
+   style.json: Style 01 30–45 s, Style 02 25–60 s) is scored **without AI**:
+   strong / quotable opening line, numbers, story and contrast markers, clean
+   ending, speaking pace, few fillers, not starting mid-thought. Weak filler
+   sentences are trimmed off the ends. The top non-overlapping clips win.
+3. `--ai` (optional): Claude re-ranks 3× the shortlist and titles them, from
+   those clips' text only (~150 tokens each). No video, no full transcript.
+4. Each clip is cut and edited in the style straight from the master file
+   (pauses/fillers/retakes removed; Style 01 moves the clip's most quotable
+   line to the front as the hook, Style 02 keeps the natural opening), with
+   b-roll slots, captions, music — `output/episode_clips/clip_01/ … clip_10/`.
+5. `clips.md` lists every clip with time range, score, why it was picked and
+   its hook, for a 1-minute human check before Premiere.
+
 ## B-roll: slots first, footage second
 
 B-roll is decided in two separate steps, so the computer, an editor or AI can
@@ -150,6 +174,7 @@ sheets. On the Style 01 sample it reproduces the hand measurements: cuts at
 | `analyze VIDEO` | measure a reference edit |
 | `learn SRC...` | download (optional) + analyse many references, combined summary |
 | `quote CLIP... --text` | Style 01 quote video |
+| `clips LONG --count N` | find the best N clips in a long recording and edit each |
 | `transcript CLIP` | numbered sentences with times (pick a hook) |
 
 Common options: `--style`, `--mode none|tight` (pre-cut vs. cut pauses/fillers/retakes),

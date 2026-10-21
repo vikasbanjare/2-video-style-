@@ -301,3 +301,54 @@ def test_quote_format(media, tmp_path):
     seq = _check_xml(out / "clip.xml", {"video": 1, "audio": 2})                         # no source audio, music L/R
     assert {f.find("name").text for f in seq.iter("file") if f.find("name") is not None} >= {"clip.mp4", "gym2.mp4"}
     assert abs(probe(out / "clip_preview.mp4").duration - 10.0) < 0.2
+
+
+def _episode_words():
+    dull = ("so um yeah we kind of um talked about like the thing and uh it was basically fine I guess. "
+            "and then um we sort of just you know moved on to the next thing like usual. ")
+    good1 = ("If you're not failing you're not trying hard enough. I started the company in a tiny garage "
+             "with two laptops. Nobody believed in us. But we sold 29,000 units in six weeks. "
+             "The first year we made every mistake possible. Then one day a buyer from Costco called. "
+             "That call changed everything for the business. ")
+    good2 = ("Why do most founders fail? They never talk to customers. I learned that the hard way years ago. "
+             "We spent $500,000 on a product nobody wanted. But the next launch made 3 million dollars. "
+             "Talk to customers before you build anything. ")
+    text = dull * 6 + good1 + dull * 6 + good2 + dull * 4
+    return W(text, 1.0, step=0.33)
+
+
+def test_clips_from_long_recording(tmp_path):
+    from autoedit.clipfind import find_clips
+    words = _episode_words()
+    total = words[-1]["e"] + 2
+    chosen, cands = find_clips(words, count=2, min_len=20, max_len=45)
+    assert len(chosen) == 2 and len(cands) > 10
+    texts = [c["text"] for c in chosen]
+    assert any("29,000" in t for t in texts) and any("$500,000" in t for t in texts)   # the two strong passages
+    assert all(not c["text"].lower().startswith(("so ", "and ")) for c in chosen)
+    assert all("um" not in c["text"].split()[-12:] for c in chosen)               # no filler tail
+    assert any(c["hook"]["text"].startswith("If you're not failing") for c in chosen)
+
+    long = tmp_path / "episode.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=s=360x640:r=24000/1001:d={total:.1f}",
+                    "-f", "lavfi", "-i", f"sine=f=200:d={total:.1f}", "-ac", "2", "-shortest", "-preset", "ultrafast",
+                    str(long)], check=True)
+    (tmp_path / "episode.mp4.words.json").write_text(json.dumps(words))
+    main(["clips", str(long), "--style", "style-01-raw-captions", "--count", "2", "--min-len", "20", "--max-len", "45",
+          "--out", str(tmp_path / "out")])
+    out = tmp_path / "out" / "episode_clips"
+    assert (out / "clips.md").exists() and json.loads((out / "clips.json").read_text())
+    for n in (1, 2):
+        job = out / f"clip_{n:02d}"
+        plan = json.loads((job / f"clip_{n:02d}_plan.json").read_text())
+        a, b = plan["window"]
+        assert 16 <= b - a <= 45 and plan["duration"] < b - a + 1          # pauses / fillers tightened
+        assert all(a - 0.2 <= c["src_in"] and c["src_out"] <= b + 1 for c in plan["clips"])   # cut from the master
+        assert (job / f"clip_{n:02d}.xml").exists() and (job / f"clip_{n:02d}_captions.srt").exists()
+    # style 01 moves the most quotable line to the front of the clip that has it
+    first_caps = [(out / f"clip_{n:02d}" / f"clip_{n:02d}_captions.srt").read_text().split("\n")[2] for n in (1, 2)]
+    assert any(c.startswith("If you're not failing") for c in first_caps)
+    before = json.loads((out / "clip_01" / "clip_01_plan.json").read_text())
+    main(["fill", str(out / "clip_01")])                                    # fill keeps the clip's window
+    after = json.loads((out / "clip_01" / "clip_01_plan.json").read_text())
+    assert after["window"] == before["window"] and after["duration"] == before["duration"]

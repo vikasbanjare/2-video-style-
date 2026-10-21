@@ -8,6 +8,7 @@
   python -m autoedit analyze REF.mp4                          measure a reference edit (style learning)
   python -m autoedit learn URL|FILE... --name ID              download + analyse many references, one summary
   python -m autoedit quote CLIP... --text "..."               Style 01 quote video (one sentence over footage)
+  python -m autoedit clips LONG.mp4 --count 10 --style ID   find the best clips in a 1-2 h recording, edit each
   python -m autoedit transcript CLIP.mp4                      numbered sentences, for picking a hook
 """
 import argparse
@@ -99,11 +100,11 @@ def apply_split_screen(plan, splits):
         plan.clips = out
 
 
-def edit_one(video, style, args, music_file=None, slots_override=None, log=print):
+def edit_one(video, style, args, music_file=None, slots_override=None, log=print, words_override=None, name=None):
     video = Path(video).resolve()
     src = probe(video)
-    srt = _srt_for(video, args)
-    words = get_words(video, srt, args.words, args.model)
+    srt = _srt_for(video, args) if words_override is None else None
+    words = words_override if words_override is not None else get_words(video, srt, args.words, args.model)
     mode = args.mode or ("tight" if style["id"].startswith("style-01") and not srt else "none")
     plan = build_plan(words, src.duration, style, mode=mode, hook=parse_range(args.hook) if args.hook else None)
     if mode == "none":
@@ -112,7 +113,8 @@ def edit_one(video, style, args, music_file=None, slots_override=None, log=print
             w["hook"] = w["e"] <= plan.hook_end + 0.01
     plan = apply_zooms(plan, style.get("zoom"))
 
-    out = Path(args.out).resolve() / video.stem
+    stem = name or video.stem
+    out = Path(args.out).resolve() / stem
     out.mkdir(parents=True, exist_ok=True)
     W, H = style["sequence"]["width"], style["sequence"]["height"]
 
@@ -126,17 +128,17 @@ def edit_one(video, style, args, music_file=None, slots_override=None, log=print
             normal, strong = build_chunks(plan.words, ccfg, variant.get("emphasis", "track"),
                                           variant.get("accent", "#0EB2EE"))
             caption_tracks = [(normal, look)]
-            write_srt(normal, out / f"{video.stem}_captions.srt")
+            write_srt(normal, out / f"{stem}_captions.srt")
             if strong:
                 caption_tracks.append((strong, style.get("caption_look_emphasis")))
-                write_srt(strong, out / f"{video.stem}_captions_emphasis.srt")
+                write_srt(strong, out / f"{stem}_captions_emphasis.srt")
         else:
             cues = build_cues(plan.words, ccfg, plan.hook_end,
                               style["hook"].get("caption_mode", "static"), style["hook"].get("gap_after", 0.2))
             caption_tracks = [(cues, style["caption_look"])]
-            write_srt(cues, out / f"{video.stem}_captions.srt")
+            write_srt(cues, out / f"{stem}_captions.srt")
     elif mode == "none" and srt:
-        shutil.copy(srt, out / f"{video.stem}_captions.srt")   # client's SRT, untouched
+        shutil.copy(srt, out / f"{stem}_captions.srt")   # client's SRT, untouched
 
     # ---- b-roll: where (slots), then what (manual > dropped files > AI > keywords)
     gcfg = style.get("graphics", {})
@@ -180,9 +182,8 @@ def edit_one(video, style, args, music_file=None, slots_override=None, log=print
     counters = [(s["start"], s["start"] + s["duration"]) for s in slots if s.get("type") == "counter"]
     if counters and caption_tracks:   # the number graphic is the caption: no white text on the light card
         caption_tracks = [(hide_during(cues, counters), look) for cues, look in caption_tracks]
-        names = ["_captions.srt", "_captions_emphasis.srt"]
-        for (cues, _), name in zip(caption_tracks, names):
-            write_srt(cues, out / f"{video.stem}{name}")
+        for (cues, _), suffix in zip(caption_tracks, ["_captions.srt", "_captions_emphasis.srt"]):
+            write_srt(cues, out / f"{stem}{suffix}")
     (out / "slots.json").write_text(json.dumps(slots, indent=1))
     (out / ".slots_auto.json").write_text(json.dumps(slots, indent=1))  # lets `fill` spot hand edits
 
@@ -202,7 +203,7 @@ def edit_one(video, style, args, music_file=None, slots_override=None, log=print
         music = (probe(music_file), style["music"])
 
     from .xml_export import write_xml
-    write_xml(out / f"{video.stem}.xml", f"{video.stem} - {style['name']}", plan, src, style,
+    write_xml(out / f"{stem}.xml", f"{stem} - {style['name']}", plan, src, style,
               placements, title, music, slots)
     cues = [c for track, _ in caption_tracks for c in track]
 
@@ -212,15 +213,16 @@ def edit_one(video, style, args, music_file=None, slots_override=None, log=print
     report = {
         "source": str(video), "style": style["id"], "mode": mode, "duration": round(plan.duration, 3),
         "hook_end": round(plan.hook_end, 3), "notes": plan.notes,
+        "window": [words[0]["s"], words[-1]["e"]] if words_override and words else None,
         "clips": [vars(c) for c in plan.clips],
         "broll": {"slots": len(slots), "filled": filled, "empty": len(slots) - filled},
         "music": str(music_file) if music else None, "captions": len(cues or []), "args": saved_args,
     }
-    (out / f"{video.stem}_plan.json").write_text(json.dumps(report, indent=1))
+    (out / f"{stem}_plan.json").write_text(json.dumps(report, indent=1))
 
     if args.preview:
         from .preview import render
-        render(out / f"{video.stem}_preview.mp4", plan, src, style, caption_tracks, placements, title, music, out,
+        render(out / f"{stem}_preview.mp4", plan, src, style, caption_tracks, placements, title, music, out,
                fast=args.preview == "fast")
     log(f"[ok] {video.name}: {plan.duration:.1f}s, {len(plan.clips)} shots, b-roll {filled}/{len(slots)} slots filled, "
         f"{len(cues or [])} caption cues -> {out}")
@@ -249,7 +251,12 @@ def cmd_fill(args):
             s["source"] = "manual" if s.get("file") and Path(s["file"]).exists() else None
         elif s.get("source") != "plan":
             s["file"], s["source"] = None, None
-    edit_one(saved.video, load_style(saved.style), saved, saved.music, slots_override=slots)
+    sub = None
+    if plan.get("window"):   # a clip cut from a long recording: same words window as before
+        a, b = plan["window"]
+        sub = [w for w in get_words(saved.video, saved.srt, saved.words, saved.model) if a - 0.01 <= w["s"] and w["e"] <= b + 0.01]
+    edit_one(saved.video, load_style(saved.style), saved, saved.music, slots_override=slots,
+             words_override=sub, name=out.name)
 
 
 def _job(video, style_id, args_dict, music):
@@ -287,6 +294,29 @@ def cmd_batch(args, style):
                 print(f"[FAILED] {futs[f].name}: {e}", file=sys.stderr)
     print(f"done: {len(todo) - failed}/{len(todo)} clips")
     sys.exit(1 if failed else 0)
+
+
+def cmd_clips(args, style):
+    """Long recording -> the best N short clips, each edited in the style."""
+    from .clipfind import ai_rerank, find_clips, write_report
+    video = Path(args.video).resolve()
+    words = get_words(video, args.srt, args.words, args.model)
+    ccfg = style.get("clips", {})
+    lo, hi = args.min_len or ccfg.get("min_len", 25), args.max_len or ccfg.get("max_len", 60)
+    chosen, cands = find_clips(words, args.count * (3 if args.ai else 1), lo, hi)
+    if args.ai and chosen:
+        chosen = ai_rerank(chosen, args.ai_model, args.count)
+    chosen = chosen[:args.count]
+    out = Path(args.out).resolve() / f"{video.stem}_clips"
+    out.mkdir(parents=True, exist_ok=True)
+    write_report(chosen, out / "clips.md")
+    print(f"{len(cands)} candidates scored, {len(chosen)} clips chosen -> {out / 'clips.md'}")
+    args.out, args.mode = str(out), args.mode or "tight"
+    pick = style["hook"].get("pick", "first")
+    for n, c in enumerate(chosen, 1):
+        sub = [w for w in words if c["start"] - 0.01 <= w["s"] and w["e"] <= c["end"] + 0.01]
+        args.hook = f"{c['hook']['start']}-{c['hook']['end']}" if pick == "quotable" and c["hook"]["score"] >= 2 else None
+        edit_one(video, style, args, args.music, words_override=sub, name=f"clip_{n:02d}")
 
 
 def cmd_transcript(args):
@@ -345,6 +375,10 @@ def main(argv=None):
     p.add_argument("clips", nargs="+"); p.add_argument("--text", required=True)
     p.add_argument("--style", default="style-01-quote"); p.add_argument("--music"); p.add_argument("--out", default="output")
     p.add_argument("--preview", nargs="?", const="fast", choices=["fast", "full"])
+    p = sub.add_parser("clips", help="long recording -> best N short clips, edited in the style")
+    p.add_argument("video"); common(p)
+    p.add_argument("--count", type=int, default=10)
+    p.add_argument("--min-len", type=float); p.add_argument("--max-len", type=float)
     p = sub.add_parser("transcript"); p.add_argument("video")
     p.add_argument("--srt"); p.add_argument("--words"); p.add_argument("--model", default="small")
     args = ap.parse_args(argv)
@@ -378,6 +412,8 @@ def main(argv=None):
     if args.cmd == "edit":
         edit_one(args.video, style, args, args.music)
         return
+    if args.cmd == "clips":
+        return cmd_clips(args, style)
     cmd_batch(args, style)
 
 

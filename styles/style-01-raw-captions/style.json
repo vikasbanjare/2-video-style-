@@ -27,7 +27,8 @@
   "hook": {
     "remove_from_body": true,
     "gap_after": 0.2,
-    "caption_mode": "static"
+    "caption_mode": "static",
+    "pick": "quotable"
   },
   "title_card": {
     "fade_in_start": 0.5,
@@ -92,5 +93,10 @@
   },
   "zoom": {
     "enabled": false
+  },
+  "clips": {
+    "min_len": 30,
+    "max_len": 45,
+    "_note": "length range for `clips` (long recording -> shorts)"
   }
 }

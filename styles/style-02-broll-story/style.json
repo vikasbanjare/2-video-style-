@@ -27,7 +27,8 @@
   "hook": {
     "remove_from_body": true,
     "gap_after": 0.0,
-    "caption_mode": "chunk"
+    "caption_mode": "chunk",
+    "pick": "first"
   },
   "title_card": {
     "at": "after_hook",
@@ -167,5 +168,10 @@
       },
       "_ref": "sample10: every caption bold house blue with a dark soft shadow"
     }
+  },
+  "clips": {
+    "min_len": 25,
+    "max_len": 60,
+    "_note": "length range for `clips` (long recording -> shorts)"
   }
 }

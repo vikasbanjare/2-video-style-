@@ -22,6 +22,12 @@ music folder ──────────────┘                     o
 | `style-01-raw-captions` | **Raw Captions** | Caption-only talking head. Punchline cold-open + title card, tight jump cuts, big centred line-by-line captions, censored swears, quiet music bed, no b-roll, no zooms. | Learned from sample `0001.mp4` — [`STYLE_GUIDE.md`](styles/style-01-raw-captions/STYLE_GUIDE.md) |
 | `style-02-broll-story` | **B-Roll Story** | Fast podcast clip: split-screen hook, guest name tag, re-cut/punch-in every ~1.5 s, client b-roll on the spoken noun (wide footage fitted over a blurred copy), count-up number graphics, 1-3 word captions with bold key phrases. | Learned from sample #2 — [`STYLE_GUIDE.md`](styles/style-02-broll-story/STYLE_GUIDE.md) |
 
+| `style-01-quote` | **Raw Captions – Quote** | Style 01's short format: 8–10 s of lifestyle footage, one lowercase serif sentence the whole time, music. `python -m autoedit quote clip.mp4 --text "..."` | Learned from refs sample1 + sample4 |
+
+Style 02 caption looks differ per client: `--caption-variant white-bold | blue-accent | blue-all`
+(house blue #0EB2EE). Both styles were checked against 8 more reference videos
+(`analysis/refs-batch1/summary.md`); ranges are in each STYLE_GUIDE.
+
 Each style is a `style.json` (every number the pipeline uses) plus a
 `STYLE_GUIDE.md` (how that editor thinks). New styles are new folders.
 
@@ -143,6 +149,7 @@ sheets. On the Style 01 sample it reproduces the hand measurements: cuts at
 | `catalog DIR` / `describe DIR` | index / AI-describe the b-roll library |
 | `analyze VIDEO` | measure a reference edit |
 | `learn SRC...` | download (optional) + analyse many references, combined summary |
+| `quote CLIP... --text` | Style 01 quote video |
 | `transcript CLIP` | numbered sentences with times (pick a hook) |
 
 Common options: `--style`, `--mode none|tight` (pre-cut vs. cut pauses/fillers/retakes),
@@ -198,5 +205,9 @@ zooms, title-card visibility, and the AI picker's prompt size and validation
   after import, that constant / filter name is the one thing to change.
 - `describe` / `--ai` are tested with a mocked client only; the first real run
   will show whether the descriptions are useful enough.
+- `blue-accent` writes the accent as `<font color>` in the SRT; check that
+  Premiere's SRT import keeps it (otherwise colour that word in the caption track).
+- `analyze` misses coloured captions on bright backgrounds (blue text on a white
+  shirt, sample10); their colour/position were measured by hand.
 - ExtendScript is being replaced by UXP in newer Premiere versions; if the JSX
   doesn't run, use the manual import.

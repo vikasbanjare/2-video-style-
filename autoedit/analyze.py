@@ -20,6 +20,8 @@ GW, GH = 270, 480  # analysis resolution (9:16); small 1-3 word captions need >=
 
 
 def _gray_frames(path):
+    # luma only: coloured captions on bright backgrounds (blue on a white shirt) are a known
+    # miss; a max-channel version caught them but mistook saturated footage for text
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"scale={GW}:{GH},format=gray",
                           "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
     return np.frombuffer(raw, np.uint8).reshape(-1, GH, GW)

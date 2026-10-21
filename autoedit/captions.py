@@ -154,9 +154,13 @@ def emphasis_score(chunk):
     return score
 
 
-def build_chunks(plan_words, ccfg):
+def build_chunks(plan_words, ccfg, emphasis="track", accent="#0EB2EE"):
     """1-3 word captions that replace each other (Style 02). Returns
-    (normal_cues, emphasis_cues): two lists, for two caption tracks/styles."""
+    (normal_cues, emphasis_cues):
+      emphasis="track" – key chunks go to the second list (own caption track/style)
+      emphasis="word"  – one list; the key word of each key chunk is wrapped in
+                         <font color="accent"> (accent-colour word, e.g. house blue)
+      emphasis="none"  – one list, no emphasis"""
     words = []
     for w in plan_words:
         t, end, cut = clean(w["w"], ccfg)
@@ -218,5 +222,10 @@ def build_chunks(plan_words, ccfg):
         s = c[0]["s"]
         nxt = chunks[i + 1][0]["s"] if i + 1 < len(chunks) else None
         e = nxt if nxt is not None and nxt - c[-1]["e"] < 0.6 else c[-1]["e"] + ccfg.get("hold_after_last_word", 0.2)
-        (strong if i in emph else normal).append((round(s, 3), round(max(e, s + 0.1), 3), _text(c)))
+        text = _text(c)
+        if i in emph and emphasis == "word":
+            key = max(c, key=lambda w: (bool(NUMBER.match(w["t"])), _content(w["t"]), len(w["t"])))
+            text = " ".join(f'<font color="{accent}">{w["t"]}</font>' if w is key else w["t"] for w in c)
+        cue = (round(s, 3), round(max(e, s + 0.1), 3), text)
+        (strong if i in emph and emphasis == "track" else normal).append(cue)
     return normal, strong

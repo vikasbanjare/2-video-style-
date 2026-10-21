@@ -3,9 +3,26 @@
 Caption-only, talking-head short. No b-roll, no zooms, no sound effects. The
 speaker, the words on screen, and a quiet music bed carry the whole video.
 
-Learned from reference sample `0001.mp4` (720×1280, 23.976 fps, 34.4 s).
-All numbers below were measured from that file (frame diffs, caption-band pixel
-tracking, loudness and spectrum analysis), not guessed.
+Learned from reference sample `0001.mp4` (720×1280, 23.976 fps, 34.4 s), then
+checked against 5 more videos from the same creator (refs batch 1: sample1-5,
+`analysis/refs-batch1/summary.md`). All numbers are measured, not guessed.
+
+## 0. Across 6 videos (what is constant, what varies)
+
+| Rule | Range | Holds in |
+|---|---|---|
+| Cuts per 10 s | 1.0 – 1.9 (median ~1.2) | all talking videos |
+| Median shot | 4.2 – 5.5 s | all talking videos |
+| "Co-Founder and CEO of Bloom" card + arrow at the start | top-left, first ~5 s | 4/4 talking videos |
+| Caption block centre | 47 – 57 % from top (on the chest; depends on framing) | all |
+| Loudness | −14.1 to −14.4 LUFS | all |
+| Locations | gym, trade-show walk-and-talk, kitchen table, car | — |
+| Occasional emphasis | quotes + ALL-CAPS word ("“It will NEVER work...”") | 1/4 |
+
+**Second format — quote video** (sample1, sample4): 8.8–10 s of the creator
+training, 0–1 cuts, one lowercase sentence *with* its full stop in a white
+serif (Times-like, ~50 px @1080) centred at ~50 % for the whole video, music
+only. Built by `python -m autoedit quote` with style `style-01-quote`.
 
 Reference frames: `docs/reference/style01_contact_0-18s.png`,
 `docs/reference/style01_contact_18-34s.png`, `docs/reference/style01_caption_closeup.png`.

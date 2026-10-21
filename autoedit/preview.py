@@ -1,6 +1,7 @@
 """Renders a quick MP4 of the planned edit with ffmpeg, so an edit can be
 checked (or even shipped) without opening Premiere. Mirrors the XML: cuts,
 punch-ins, b-roll, title card, burned captions, music bed, -14 LUFS."""
+import re
 import subprocess
 from pathlib import Path
 
@@ -11,6 +12,15 @@ def _ass_time(t):
     m, cs = divmod(cs, 6000)
     s, cs = divmod(cs, 100)
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def _ass_text(t):
+    """SRT text -> ASS: newlines, and <font color="#RRGGBB">word</font> accents."""
+    def col(m):
+        h = m.group(1).lstrip("#")
+        return f"{{\\c&H{h[4:6]}{h[2:4]}{h[0:2]}&}}{m.group(2)}{{\\c}}"
+    t = re.sub(r'<font color="([^"]+)">(.*?)</font>', col, t)
+    return re.sub(r"<[^>]+>", "", t).replace("\n", "\\N")
 
 
 def write_ass(tracks, W, H, path):
@@ -31,11 +41,13 @@ def write_ass(tracks, W, H, path):
         alpha = format(int(255 * (1 - sh["opacity"])), "02X")
         bold = -1 if look.get("weight", "").lower() in ("bold", "semibold", "heavy", "black") else 0
         spacing = look.get("tracking_px", 0) * W / 1080
-        head += (f"Style: Cap{n},{look.get('font_fallback', 'Inter')},{size:.0f},&H00FFFFFF,&H00FFFFFF,&H00000000,"
+        rgb = look.get("color", "#FFFFFF").lstrip("#")
+        prim = f"&H00{rgb[4:6]}{rgb[2:4]}{rgb[0:2]}"
+        head += (f"Style: Cap{n},{look.get('font_fallback', 'Inter')},{size:.0f},{prim},&H00FFFFFF,&H00000000,"
                  f"&H{alpha}000000,{bold},0,0,0,100,100,{spacing:.1f},0,1,0,{sh.get('distance_px', 1)},5,0,0,0,1\n")
         y = H * look["center_y_pct"] / 100
         events += [f"Dialogue: 0,{_ass_time(s)},{_ass_time(e)},Cap{n},,0,0,0,,"
-                   f"{{\\pos({W / 2:.0f},{y:.0f})\\blur{sh.get('blur_px', 0) / 3:.1f}}}" + t.replace("\n", "\\N")
+                   f"{{\\pos({W / 2:.0f},{y:.0f})\\blur{sh.get('blur_px', 0) / 3:.1f}}}" + _ass_text(t)
                    for s, e, t in cues]
     head += "\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     Path(path).write_text(head + "\n".join(events) + "\n", encoding="utf-8")
@@ -55,20 +67,22 @@ def render(out, plan, src_info, style, cues=None, broll=None, title_card=None, m
     # one seeked input per shot: each decodes only its own seconds (a single input
     # split into N trims would push every frame through every branch)
     inputs, fc, vlabels = [], [], []
+    use_audio = src_info.has_audio and style.get("source_audio", True) and all(
+        (c.src or src_info).has_audio for c in plan.clips)
     for k, c in enumerate(plan.clips):
-        inputs += ["-ss", f"{c.src_in:.4f}", "-t", f"{c.src_out - c.src_in:.4f}", "-i", str(src_info.path)]
+        inputs += ["-ss", f"{c.src_in:.4f}", "-t", f"{c.src_out - c.src_in:.4f}", "-i", str((c.src or src_info).path)]
         shift = ""
         if c.pos_y:   # split screen: speaker moved up (negative = up), rest padded
             dy = int(abs(c.pos_y) * H)
             shift = f",crop={W}:{H - dy}:0:{dy},pad={W}:{H}:0:0" if c.pos_y < 0 else f",crop={W}:{H - dy}:0:0,pad={W}:{H}:0:{dy}"
         fc.append(f"[{k}:v]setpts=PTS-STARTPTS,fps={fps},{_fill(W, H, c.scale / 100)}{shift}[v{k}]")
         vlabels.append(f"[v{k}]")
-        if src_info.has_audio:
+        if use_audio:
             fc.append(f"[{k}:a]asetpts=PTS-STARTPTS[a{k}]")
             vlabels.append(f"[a{k}]")
     n = len(plan.clips)
-    fc.append(f"{''.join(vlabels)}concat=n={n}:v=1:a={1 if src_info.has_audio else 0}[base]"
-              + ("[aud]" if src_info.has_audio else ""))
+    fc.append(f"{''.join(vlabels)}concat=n={n}:v=1:a={1 if use_audio else 0}[base]"
+              + ("[aud]" if use_audio else ""))
     cur = "[base]"
     idx = n
     for j, p in enumerate(broll or []):
@@ -110,7 +124,7 @@ def render(out, plan, src_info, style, cues=None, broll=None, title_card=None, m
         esc = str(ass).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
         fc.append(f"{cur}ass='{esc}'[vout]")
         cur = "[vout]"
-    alab = "[aud]" if src_info.has_audio else None
+    alab = "[aud]" if use_audio else None
     if music:
         m_info, mcfg = music
         inputs += ["-i", str(m_info.path)]

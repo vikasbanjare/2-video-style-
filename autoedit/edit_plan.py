@@ -17,6 +17,7 @@ class Clip:
     rec_in: float
     scale: float = 100.0  # Basic Motion scale %, used for punch-in zooms
     pos_y: float = 0.0    # vertical offset as a fraction of frame height (split screen: -0.25 = top half)
+    src: object = None    # MediaInfo when the shot comes from another file than the main source
 
     @property
     def rec_out(self):

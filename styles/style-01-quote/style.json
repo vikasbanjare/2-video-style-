@@ -1,0 +1,22 @@
+{
+  "id": "style-01-quote",
+  "name": "Raw Captions - Quote",
+  "description": "Style 01 short format: 8-10 s of lifestyle footage (gym, training) with one lowercase serif sentence on screen the whole time and a music bed. 0-1 cuts.",
+  "sequence": { "width": 1080, "height": 1920 },
+  "quote": { "target_duration": 10.0, "min_shot": 4.5, "skip_start": 0.3 },
+  "source_audio": false,
+  "captions": { "enabled": true },
+  "caption_look": {
+    "font": "Times New Roman",
+    "font_fallback": "Liberation Serif",
+    "weight": "Regular",
+    "size_px_at_1080w": 50,
+    "color": "#FFFFFF",
+    "stroke": null,
+    "shadow": { "opacity": 0.35, "blur_px": 4, "distance_px": 1 },
+    "center_y_pct": 50
+  },
+  "broll": { "enabled": false },
+  "music": { "enabled": true, "level_db": -1, "fade_in": 0.2, "fade_out": 0.8 },
+  "deliver": { "loudness_lufs": -14 }
+}

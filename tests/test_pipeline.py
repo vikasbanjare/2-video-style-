@@ -284,3 +284,20 @@ def test_learn_summarises_several_references(media, tmp_path):
     md = (tmp_path / "learn" / "summary.md").read_text()
     assert "| 1 | clip_preview.mp4 |" in md and "| 2 | clip.mp4 |" in md
     assert (tmp_path / "learn" / "01_clip_preview" / "sheet_01.jpg").exists()
+
+
+def test_quote_format(media, tmp_path):
+    shot2 = tmp_path / "gym2.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=1080x1920:r=24000/1001:d=8",
+                    str(shot2)], check=True)
+    main(["quote", str(media / "clip.mp4"), str(shot2), "--text", "right now is not the time to rest.",
+          "--music", str(media / "music.mp3"), "--out", str(tmp_path), "--preview", "full"])
+    out = tmp_path / "clip_quote"
+    plan = json.loads((out / "clip_plan.json").read_text())
+    assert abs(plan["duration"] - 10.0) < 0.05 and len(plan["clips"]) == 2           # 2 shots of 5 s
+    assert [Path(c["src"]).name for c in plan["clips"]] == ["clip.mp4", "gym2.mp4"]
+    srt = (out / "clip_captions.srt").read_text()
+    assert srt.count("-->") == 1 and "right now is not the time to rest." in srt        # one line, full length
+    seq = _check_xml(out / "clip.xml", {"video": 1, "audio": 2})                         # no source audio, music L/R
+    assert {f.find("name").text for f in seq.iter("file") if f.find("name") is not None} >= {"clip.mp4", "gym2.mp4"}
+    assert abs(probe(out / "clip_preview.mp4").duration - 10.0) < 0.2

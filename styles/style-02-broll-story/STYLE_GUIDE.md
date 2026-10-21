@@ -4,7 +4,32 @@ Fast, visual podcast clip. The guest's story is illustrated on the exact
 words: client b-roll, count-up number graphics, a split-screen hook, small
 1-3 word captions with bold key phrases, and constant re-framing.
 
-Learned from reference sample #2 (`0001.mp4`, 720×1280, 30 fps, 32.5 s).
+Learned from reference sample #2 (`0001.mp4`, 720×1280, 30 fps, 32.5 s), then
+checked against 3 more podcast clips (refs batch 1: sample7, 9, 10; sample8 is
+the original reference).
+
+## 0. Across 4 videos
+
+| Rule | Range |
+|---|---|
+| Cuts per 10 s | 2.2 – 5.6 (median ~3.7) |
+| Median shot | 1.1 – 2.8 s |
+| Opening | guest/host intro shot with a name tag ("Alex Hormozi / Acquisition.com") or a b-roll cold open, in 4/4 |
+| Split screen with b-roll | 2/4 |
+| Loudness | −14.2 to −14.9 LUFS |
+| Caption treatment | **per client** — three variants below |
+
+**Caption variants** (`--caption-variant`, defined in style.json):
+
+| Variant | Seen in | Look |
+|---|---|---|
+| `white-bold` (default) | sample8, sample9 | small white medium + big white bold key phrases (2 tracks) |
+| `blue-accent` | sample7 | white semibold, the key word of key phrases in house blue **#0EB2EE**, ~61 % down |
+| `blue-all` | sample10 | every caption bold house blue with a dark soft shadow, ~61 % down |
+
+The blue measured #0BB5ED and #10AEF0 in two different clients' clips → one
+house accent, ≈ **#0EB2EE**. In SRT the accent is written as
+`<font color="#0EB2EE">word</font>`.
 Measured with `python -m autoedit analyze` (report: `docs/reference/style02_analysis.md`)
 plus frame checks. Reference images: `docs/reference/style02_one_frame_per_shot.png`,
 `style02_contact_*.jpg`, `style02_captions_closeup.png`.

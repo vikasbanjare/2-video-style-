@@ -7,6 +7,7 @@
   python -m autoedit describe BROLL_DIR                       AI-describe new library files once (optional)
   python -m autoedit analyze REF.mp4                          measure a reference edit (style learning)
   python -m autoedit learn URL|FILE... --name ID              download + analyse many references, one summary
+  python -m autoedit quote CLIP... --text "..."               Style 01 quote video (one sentence over footage)
   python -m autoedit transcript CLIP.mp4                      numbered sentences, for picking a hook
 """
 import argparse
@@ -120,10 +121,15 @@ def edit_one(video, style, args, music_file=None, slots_override=None, log=print
     if ccfg.get("enabled") and not args.no_captions and not (
             srt and mode == "none" and ccfg.get("prefer_client_srt") and not args.restyle_captions):
         if ccfg.get("reveal") == "chunk":
-            normal, strong = build_chunks(plan.words, ccfg)
-            caption_tracks = [(normal, style["caption_look"]), (strong, style.get("caption_look_emphasis"))]
+            variant = (style.get("caption_variants") or {}).get(args.caption_variant or style.get("caption_variant"), {})
+            look = dict(style["caption_look"], **variant.get("look", {}))
+            normal, strong = build_chunks(plan.words, ccfg, variant.get("emphasis", "track"),
+                                          variant.get("accent", "#0EB2EE"))
+            caption_tracks = [(normal, look)]
             write_srt(normal, out / f"{video.stem}_captions.srt")
-            write_srt(strong, out / f"{video.stem}_captions_emphasis.srt")
+            if strong:
+                caption_tracks.append((strong, style.get("caption_look_emphasis")))
+                write_srt(strong, out / f"{video.stem}_captions_emphasis.srt")
         else:
             cues = build_cues(plan.words, ccfg, plan.hook_end,
                               style["hook"].get("caption_mode", "static"), style["hook"].get("gap_after", 0.2))
@@ -314,6 +320,7 @@ def main(argv=None):
         p.add_argument("--restyle-captions", action="store_true",
                        help="build the style's captions even when the client sent an SRT")
         p.add_argument("--title-at", help="show the title card / name tag at A-B seconds")
+        p.add_argument("--caption-variant", help="style caption variant, e.g. white-bold | blue-accent | blue-all")
         p.add_argument("--preview", nargs="?", const="fast", choices=["fast", "full"],
                        help="render an MP4 preview: fast = 540x960 draft (default), full = 1080x1920")
         p.add_argument("--out", default="output")
@@ -334,6 +341,10 @@ def main(argv=None):
     p.add_argument("--count", type=int, default=5, help="latest N posts per profile URL")
     p.add_argument("--cookies", help="cookies.txt from a logged-in browser (Instagram needs it)")
     p.add_argument("--name", default="new-style", help="output folder name under analysis/")
+    p = sub.add_parser("quote", help="Style 01 quote format: one sentence over lifestyle footage")
+    p.add_argument("clips", nargs="+"); p.add_argument("--text", required=True)
+    p.add_argument("--style", default="style-01-quote"); p.add_argument("--music"); p.add_argument("--out", default="output")
+    p.add_argument("--preview", nargs="?", const="fast", choices=["fast", "full"])
     p = sub.add_parser("transcript"); p.add_argument("video")
     p.add_argument("--srt"); p.add_argument("--words"); p.add_argument("--model", default="small")
     args = ap.parse_args(argv)
@@ -348,6 +359,9 @@ def main(argv=None):
     if args.cmd == "describe":
         from .ai import describe_library
         return describe_library(args.folder, args.ai_model)
+    if args.cmd == "quote":
+        from .quote import make_quote
+        return make_quote(args.clips, args.text, load_style(args.style), args.out, args.music, args.preview)
     if args.cmd == "learn":
         from .learn import learn
         out = Path("analysis") / args.name

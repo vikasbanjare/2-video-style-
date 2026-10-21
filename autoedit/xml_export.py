@@ -130,20 +130,23 @@ def markers_xml(x, slots):
 def write_xml(path, name, plan, src_info, style, broll=None, title_card=None, music=None, slots=None):
     W, H = style["sequence"]["width"], style["sequence"]["height"]
     x = XmlWriter(src_info.fps)
-    base = fill_scale(src_info, W, H)
-
+    keep_audio = style.get("source_audio", True)
     v1, a1, a2 = [], [], []
     for k, c in enumerate(plan.clips):
+        info = c.src or src_info
+        base = fill_scale(info, W, H)
         ids = [f"v1-{k}", f"a1-{k}", f"a2-{k}"]
         links = "".join(
             f"<link><linkclipref>{cid}</linkclipref><mediatype>{mt}</mediatype><trackindex>{ti}</trackindex>"
             f"<clipindex>{k + 1}</clipindex></link>"
             for cid, mt, ti in zip(ids, ["video", "audio", "audio"], [1, 1, 2]))
-        v1.append(x.clip(src_info, c.rec_in, c.rec_out, c.src_in, filters=x.motion(base * c.scale / 100, c.pos_y),
+        if not (keep_audio and info.has_audio):
+            links = ""
+        v1.append(x.clip(info, c.rec_in, c.rec_out, c.src_in, filters=x.motion(base * c.scale / 100, c.pos_y),
                          cid=ids[0], links=links))
-        if src_info.has_audio:
-            a1.append(x.clip(src_info, c.rec_in, c.rec_out, c.src_in, "audio", 1, cid=ids[1], links=links))
-            a2.append(x.clip(src_info, c.rec_in, c.rec_out, c.src_in, "audio", min(2, src_info.audio_channels),
+        if keep_audio and info.has_audio:
+            a1.append(x.clip(info, c.rec_in, c.rec_out, c.src_in, "audio", 1, cid=ids[1], links=links))
+            a2.append(x.clip(info, c.rec_in, c.rec_out, c.src_in, "audio", min(2, info.audio_channels),
                              cid=ids[2], links=links))
 
     v2, v3 = [], []    # V2: blurred backgrounds for fitted wide b-roll, V3: b-roll / graphics / placeholders

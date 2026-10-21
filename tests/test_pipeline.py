@@ -86,6 +86,14 @@ def test_whisper_fragments_and_numbers_stay_whole():
     assert not any(c[2].endswith("30") for c in cues)
 
 
+def test_clips_never_end_mid_sentence():
+    from autoedit.clipfind import find_clips
+    # one 60-word run-on sentence: the 45-word cap splits it, but that split is no clip boundary
+    words = W("Why is money the biggest mistake? " + "we kept going and building " * 12 + "it worked.", 0.0)
+    chosen, cands = find_clips(words, count=3, min_len=5, max_len=60)
+    assert chosen and all(c["text"].rstrip()[-1] in ".?!" for c in cands + chosen)
+
+
 @pytest.fixture(scope="module")
 def media(tmp_path_factory):
     d = tmp_path_factory.mktemp("media")

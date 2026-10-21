@@ -42,7 +42,9 @@ def sentences(words):
         nxt_gap = words[i + 1]["s"] - w["e"] if i + 1 < len(words) else 9
         if ENDS.search(w["w"]) or nxt_gap > 1.2 or len(cur) > 45:
             out.append({"i0": cur[0], "i1": cur[-1], "s": words[cur[0]]["s"], "e": w["e"],
-                        "text": " ".join(words[k]["w"] for k in cur)})
+                        "text": " ".join(words[k]["w"] for k in cur),
+                        # cut only by the length cap: mid-sentence, so never a clip boundary
+                        "forced": not ENDS.search(w["w"]) and nxt_gap <= 1.2})
             cur = []
     return out
 
@@ -110,7 +112,7 @@ def find_clips(words, count=10, min_len=25.0, max_len=60.0, gap=5.0):
             dur = sents[b]["e"] - sents[a]["s"]
             if dur > max_len:
                 break
-            if dur >= min_len:
+            if dur >= min_len and not sents[b]["forced"] and not (a and sents[a - 1]["forced"]):
                 sc, why = score_window(words, sents, a, b)
                 cands.append({"start": sents[a]["s"], "end": sents[b]["e"], "a": a, "b": b, "score": sc,
                               "why": why, "text": " ".join(s["text"] for s in sents[a:b + 1])})
@@ -126,15 +128,15 @@ def find_clips(words, count=10, min_len=25.0, max_len=60.0, gap=5.0):
             toks = [norm(t) for t in sents[k]["text"].split()]
             return sum(t in FILLERS for t in toks) / max(len(toks), 1) > 0.12 or (toks and toks[0] in BAD_START
                                                                                  and quotable(sents[k]) < 1.5)
-        while c["b"] > c["a"] and weak(c["b"]) and sents[c["b"] - 1]["e"] - sents[c["a"]]["s"] >= 0.8 * min_len:
+        while c["b"] > c["a"] and not sents[c["b"] - 1]["forced"] and weak(c["b"]) and sents[c["b"] - 1]["e"] - sents[c["a"]]["s"] >= 0.8 * min_len:
             c["b"] -= 1
-        while c["a"] < c["b"] and weak(c["a"]) and sents[c["b"]]["e"] - sents[c["a"] + 1]["s"] >= 0.8 * min_len:
+        while c["a"] < c["b"] and not sents[c["a"]]["forced"] and weak(c["a"]) and sents[c["b"]]["e"] - sents[c["a"] + 1]["s"] >= 0.8 * min_len:
             c["a"] += 1
         # then drop a host reaction ("Nice.", "Yeah.") at either end; done last so it never unlocks more trimming
         short = lambda k: len(sents[k]["text"].split()) <= 2
-        while c["b"] > c["a"] and short(c["b"]):
+        while c["b"] > c["a"] and not sents[c["b"] - 1]["forced"] and short(c["b"]):
             c["b"] -= 1
-        while c["a"] < c["b"] and short(c["a"]):
+        while c["a"] < c["b"] and not sents[c["a"]]["forced"] and short(c["a"]):
             c["a"] += 1
         c["start"], c["end"] = sents[c["a"]]["s"], sents[c["b"]]["e"]
         c["text"] = " ".join(x["text"] for x in sents[c["a"]:c["b"] + 1])

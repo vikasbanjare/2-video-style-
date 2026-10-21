@@ -298,12 +298,12 @@ def cmd_batch(args, style):
 
 def cmd_clips(args, style):
     """Long recording -> the best N short clips, each edited in the style."""
-    from .clipfind import ai_rerank, find_clips, write_report
+    from .clipfind import ai_rerank, find_clips, new_places, write_report
     video = Path(args.video).resolve()
     words = get_words(video, args.srt, args.words, args.model)
     ccfg = style.get("clips", {})
     lo, hi = args.min_len or ccfg.get("min_len", 25), args.max_len or ccfg.get("max_len", 60)
-    chosen, cands = find_clips(words, args.count * (3 if args.ai else 1), lo, hi)
+    chosen, cands = find_clips(words, args.count * (3 if args.ai else 1), lo, hi, places=new_places(video))
     if args.ai and chosen:
         chosen = ai_rerank(chosen, args.ai_model, args.count)
     chosen = chosen[:args.count]

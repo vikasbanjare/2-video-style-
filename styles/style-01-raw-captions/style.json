@@ -65,16 +65,17 @@
   },
   "caption_look": {
     "font": "SF Pro Display",
-    "font_fallback": "Inter SemiBold",
+    "font_fallback": "Inter",
     "weight": "Semibold",
     "size_px_at_1080w": 57,
     "line_spacing": 1.15,
     "color": "#FFFFFF",
     "stroke": null,
     "shadow": {
-      "opacity": 0.3,
-      "blur_px": 3,
-      "distance_px": 1
+      "_note": "reference (dusk) measured ~0.3 / 1 px; raised so white text survives bright daylight footage",
+      "opacity": 0.6,
+      "blur_px": 4,
+      "distance_px": 2
     },
     "center_y_pct": 49,
     "max_width_pct": 67

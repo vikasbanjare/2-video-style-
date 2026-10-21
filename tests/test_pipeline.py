@@ -94,6 +94,22 @@ def test_clips_never_end_mid_sentence():
     assert chosen and all(c["text"].rstrip()[-1] in ".?!" for c in cands + chosen)
 
 
+def test_montage_penalty():
+    from autoedit.clipfind import montage_penalty
+    assert montage_penalty(0) == montage_penalty(2) == 0          # story: speaker + host cutaways
+    assert montage_penalty(6) >= 8 and montage_penalty(10) >= 16   # montage tail / intro montage sink
+    assert 0 < montage_penalty(3) <= 2                             # a few seconds of montage at an edge: mild
+
+
+def test_clips_drop_last_sentence_from_next_scene():
+    from autoedit.clipfind import find_clips
+    words = W("Why did the bagel shop grow so fast? We sold every single bagel by noon. "
+              "Then we opened a second kitchen downtown. We're Mara Goodman from Bloom.", 0.0)
+    cut = next(w["s"] for w in words if w["w"] == "We're")      # picture cuts to a new place here
+    chosen, _ = find_clips(words, count=2, min_len=3, max_len=60, places=[0.0, cut])
+    assert chosen and not any(c["text"].endswith("Bloom.") for c in chosen)
+
+
 @pytest.fixture(scope="module")
 def media(tmp_path_factory):
     d = tmp_path_factory.mktemp("media")

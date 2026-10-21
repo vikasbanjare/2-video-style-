@@ -6,3 +6,4 @@ output/
 catalog.json
 .thumbs/
 analysis/
+.venv/

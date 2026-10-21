@@ -1,4 +1,4 @@
-faster-whisper>=1.0  # only when a clip has no SRT
+numpy>=1.26
 anthropic            # only for `describe` / --ai
-pytest
 yt-dlp               # only for `learn` with URLs
+pytest

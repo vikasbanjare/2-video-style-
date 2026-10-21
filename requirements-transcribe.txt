@@ -1,0 +1,4 @@
+# Optional: local transcription for clips that have no SRT (`clips`, `transcript`, raw footage).
+# Needs a Python with prebuilt PyAV wheels (3.10-3.13); on macOS with a newer Python:
+#   brew install python@3.12 && python3.12 -m venv .venv
+faster-whisper>=1.0

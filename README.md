@@ -34,7 +34,9 @@ Each style is a `style.json` (every number the pipeline uses) plus a
 ## Install
 
 ```bash
-pip install -r requirements.txt   # faster-whisper only if a clip has no SRT; anthropic only for --ai
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt               # core
+pip install -r requirements-transcribe.txt    # optional: only for videos without an SRT
 # ffmpeg + ffprobe on PATH
 ```
 

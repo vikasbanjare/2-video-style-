@@ -1,0 +1,96 @@
+{
+  "id": "style-01-raw-captions",
+  "name": "Raw Captions",
+  "description": "Caption-only talking head: cold-open punchline hook with title card, tight jump cuts, centred line-by-line captions, quiet music bed.",
+  "sequence": {
+    "width": 1080,
+    "height": 1920
+  },
+  "cuts": {
+    "max_pause": 0.3,
+    "pad_before": 0.06,
+    "pad_after": 0.1,
+    "min_clip": 0.35,
+    "tail_after_last_word": 0.6,
+    "fillers": [
+      "um",
+      "uh",
+      "uhh",
+      "umm",
+      "erm",
+      "er",
+      "ah",
+      "hmm"
+    ],
+    "remove_retakes": true
+  },
+  "hook": {
+    "remove_from_body": true,
+    "gap_after": 0.2,
+    "caption_mode": "static"
+  },
+  "title_card": {
+    "fade_in_start": 0.5,
+    "fade_duration": 0.25,
+    "end": "hook_end"
+  },
+  "captions": {
+    "enabled": true,
+    "reveal": "line",
+    "max_lines": 2,
+    "max_chars_per_line": 28,
+    "page_break_pause": 0.35,
+    "hold_after_last_word": 0.3,
+    "strip_punctuation": ".,!?;:\"",
+    "cutoff_dash": "—",
+    "censor": [
+      "fuck",
+      "fucking",
+      "fucked",
+      "fucker",
+      "shit",
+      "shitty",
+      "bullshit",
+      "bitch",
+      "ass",
+      "asshole",
+      "damn",
+      "goddamn",
+      "dick",
+      "pussy",
+      "motherfucker",
+      "motherfucking"
+    ]
+  },
+  "caption_look": {
+    "font": "SF Pro Display",
+    "font_fallback": "Inter SemiBold",
+    "weight": "Semibold",
+    "size_px_at_1080w": 57,
+    "line_spacing": 1.15,
+    "color": "#FFFFFF",
+    "stroke": null,
+    "shadow": {
+      "opacity": 0.3,
+      "blur_px": 3,
+      "distance_px": 1
+    },
+    "center_y_pct": 49,
+    "max_width_pct": 67
+  },
+  "music": {
+    "enabled": true,
+    "level_db": -22,
+    "fade_in": 0.3,
+    "fade_out": 1.0
+  },
+  "broll": {
+    "enabled": false
+  },
+  "deliver": {
+    "loudness_lufs": -14
+  },
+  "zoom": {
+    "enabled": false
+  }
+}

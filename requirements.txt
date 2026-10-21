@@ -1,0 +1,2 @@
+faster-whisper>=1.0  # only needed when a clip has no SRT
+pytest

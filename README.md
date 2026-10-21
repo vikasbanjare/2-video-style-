@@ -37,7 +37,15 @@ Each style is a `style.json` (every number the pipeline uses) plus a
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt               # core
 pip install -r requirements-transcribe.txt    # optional: only for videos without an SRT
-# ffmpeg + ffprobe on PATH
+# ffmpeg + ffprobe on PATH, built with libass (previews burn captions in with the `ass` filter)
+```
+
+Homebrew's plain `ffmpeg` (9.x) has no libass: previews fail with "Unknown filter 'ass'"
+and so do the rendering tests. Use the full build instead:
+
+```bash
+brew install ffmpeg-full                               # keg-only, does not replace `ffmpeg`
+export PATH=/opt/homebrew/opt/ffmpeg-full/bin:$PATH    # add to ~/.zshrc
 ```
 
 ## Daily workflow
@@ -71,8 +79,16 @@ python -m autoedit clips episode.mp4 --style style-02-broll-story --count 10 \
 2. Every run of whole sentences that fits the style's length (`clips` in
    style.json: Style 01 30–45 s, Style 02 25–60 s) is scored **without AI**:
    strong / quotable opening line, numbers, story and contrast markers, clean
-   ending, speaking pace, few fillers, not starting mid-thought. Weak filler
-   sentences are trimmed off the ends. The top non-overlapping clips win.
+   ending, speaking pace, few fillers, not starting mid-thought, and **no
+   montage** (more than 2 new places in any 20 s loses points). Weak filler
+   sentences, a host's "Nice." and a last sentence that starts on a cut to a
+   new scene are trimmed off the ends. The top non-overlapping clips win.
+
+   The montage check needs two picture scans of the episode, run once and
+   cached next to it like the transcript: `episode.mp4.cuts.txt` (hard cuts)
+   and `episode.mp4.thumbs.npy` (16×9 px frames at 2 fps, ~1.6 MB per 30 min).
+   Each takes ~3.5 min for a 31 min 1080p episode on an M-series Mac; later
+   runs on the same episode start in seconds.
 3. `--ai` (optional): Claude re-ranks 3× the shortlist and titles them, from
    those clips' text only (~150 tokens each). No video, no full transcript.
 4. Each clip is cut and edited in the style straight from the master file

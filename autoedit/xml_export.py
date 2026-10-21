@@ -91,7 +91,17 @@ def fill_scale(info, w, h):
     return max(w / info.width, h / info.height) * 100
 
 
-def write_xml(path, name, plan, src_info, style, broll=None, title_card=None, music=None):
+def markers_xml(x, slots):
+    out = []
+    for s in slots or []:
+        state = Path(s["file"]).name if s.get("file") else "EMPTY - " + s.get("label", "")
+        out.append(f"<marker><name>{escape(s['id'] + ' ' + state)}</name>"
+                   f"<comment>{escape(s.get('phrase', ''))}</comment>"
+                   f"<in>{x.f(s['start'])}</in><out>{x.f(s['start'] + s['duration'])}</out></marker>")
+    return "".join(out)
+
+
+def write_xml(path, name, plan, src_info, style, broll=None, title_card=None, music=None, slots=None):
     W, H = style["sequence"]["width"], style["sequence"]["height"]
     x = XmlWriter(src_info.fps)
     base = fill_scale(src_info, W, H)
@@ -145,6 +155,6 @@ def write_xml(path, name, plan, src_info, style, broll=None, title_card=None, mu
         "<pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics>"
         f"</format>{video}</video><audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics>"
         f"<depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format>{audio}</audio></media>"
-        "</sequence></xmeml>\n"
+        f"{markers_xml(x, slots)}</sequence></xmeml>\n"
     )
     Path(path).write_text(xml, encoding="utf-8")

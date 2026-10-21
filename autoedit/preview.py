@@ -39,22 +39,27 @@ def _fill(W, H, z=1.0):
             f"crop={W}:{H},setsar=1")
 
 
-def render(out, plan, src_info, style, cues=None, broll=None, title_card=None, music=None, workdir=None):
+def render(out, plan, src_info, style, cues=None, broll=None, title_card=None, music=None, workdir=None, fast=False):
+    if fast:  # half-resolution draft: ~4x fewer pixels, fastest x264 preset
+        style = dict(style, sequence={"width": style["sequence"]["width"] // 2,
+                                      "height": style["sequence"]["height"] // 2})
     W, H = style["sequence"]["width"], style["sequence"]["height"]
     fps = float(src_info.fps) or 24
-    inputs = ["-i", str(src_info.path)]
-    fc, vlabels, alabels = [], [], []
+    # one seeked input per shot: each decodes only its own seconds (a single input
+    # split into N trims would push every frame through every branch)
+    inputs, fc, vlabels = [], [], []
     for k, c in enumerate(plan.clips):
-        fc.append(f"[0:v]trim=start={c.src_in:.4f}:end={c.src_out:.4f},setpts=PTS-STARTPTS,{_fill(W, H, c.scale / 100)}[v{k}]")
+        inputs += ["-ss", f"{c.src_in:.4f}", "-t", f"{c.src_out - c.src_in:.4f}", "-i", str(src_info.path)]
+        fc.append(f"[{k}:v]setpts=PTS-STARTPTS,fps={fps},{_fill(W, H, c.scale / 100)}[v{k}]")
         vlabels.append(f"[v{k}]")
         if src_info.has_audio:
-            fc.append(f"[0:a]atrim=start={c.src_in:.4f}:end={c.src_out:.4f},asetpts=PTS-STARTPTS[a{k}]")
+            fc.append(f"[{k}:a]asetpts=PTS-STARTPTS[a{k}]")
             vlabels.append(f"[a{k}]")
     n = len(plan.clips)
     fc.append(f"{''.join(vlabels)}concat=n={n}:v=1:a={1 if src_info.has_audio else 0}[base]"
               + ("[aud]" if src_info.has_audio else ""))
     cur = "[base]"
-    idx = 1
+    idx = n
     for j, p in enumerate(broll or []):
         a, d = p["start"], p["duration"]
         if p["still"]:
@@ -99,6 +104,6 @@ def render(out, plan, src_info, style, cues=None, broll=None, title_card=None, m
         fc.append(f"{alab}loudnorm=I={lufs}:TP=-1:LRA=11,aresample=48000[afinal]")
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(fc),
            "-map", cur] + (["-map", "[afinal]"] if alab else []) + [
-           "-r", f"{fps}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+           "-r", f"{fps}", "-c:v", "libx264", "-preset", "ultrafast" if fast else "veryfast", "-crf", "28" if fast else "20", "-pix_fmt", "yuv420p",
            "-c:a", "aac", "-b:a", "192k", "-t", f"{plan.duration:.3f}", str(out)]
     subprocess.run(cmd, check=True)

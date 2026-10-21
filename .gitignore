@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 output/
 *.words.json
+catalog.json
+.thumbs/
+analysis/

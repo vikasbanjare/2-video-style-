@@ -14,11 +14,12 @@ Not learned yet — needs the second reference video:
 - Audio: music type, level, SFX/whooshes, ducking behaviour.
 - Hook structure, opening/ending, title cards, transitions, zooms, grade.
 
-The pipeline already supports this style mechanically: put the client's clips
-in a folder and give a b-roll plan (`broll_plan.json`, see `README.md`); they
-are placed on V2 over the edited talking head. Once the reference video
-arrives, the rules above get measured the same way Style 01 was, and the
-automatic placement rules get written into `style.json`.
+The pipeline already supports this style mechanically: b-roll slots are planned
+from the transcript, filled from the client library (or left as labelled gaps
+for the editor), with punch-in zooms on V1 (see `README.md`). Once the
+reference video arrives, run `python -m autoedit analyze ref.mp4`, and the
+measured numbers replace the placeholder `broll` / `zoom` values in
+`style.json`.
 
 ## Job brief (from the client, for podcast-clip work)
 

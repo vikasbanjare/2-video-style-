@@ -1,127 +1,175 @@
 # AutoEdit — style-driven short-form editing for Premiere Pro
 
 Turns a podcast/talking-head clip into a ready-to-review Premiere Pro sequence
-in a learned editing style: cuts, punch-in zooms, captions, client b-roll,
-title card and music bed. Built for volume (500+ clips/month): one command per
-clip, or a whole inbox folder at once.
+in a learned editing style: cuts, punch-in zooms, captions, b-roll slots
+(auto-filled from the client library or left as labelled gaps), title card and
+music bed. Built for volume (500+ clips/month): a whole day's inbox is one
+command, ~2 s per clip, no AI tokens needed.
 
 ```
-clip.mp4 (+ clip.srt)  ──►  autoedit  ──►  clip.xml            → Premiere: File > Import (sequence)
-client b-roll folder                       clip_captions.srt   → caption track (apply your Track Style)
-music file / folder                        clip_preview.mp4    → quick check without opening Premiere
-title-card PNG                             clip_plan.json      → what was cut/placed and why
+inbox/clip.mp4 + clip.srt ─┐
+client b-roll library ─────┼─► autoedit batch ─► output/clip/clip.xml           → Premiere: File > Import
+music folder ──────────────┘                     output/clip/clip_captions.srt  → caption track (your Track Style)
+                                                 output/clip/slots.json         → b-roll slots (what goes where)
+                                                 output/clip/broll/             → drop B01.mp4, B02.mov … here
+                                                 output/clip/clip_preview.mp4   → optional draft render
 ```
 
 ## Styles
 
 | ID | Name | What it is | Status |
 |---|---|---|---|
-| `style-01-raw-captions` | **Raw Captions** | Caption-only talking head. Punchline cold-open + title card, tight jump cuts, big centred line-by-line captions, censored swears, quiet music bed, no b-roll, no zooms. | Learned from sample `0001.mp4` — see [`styles/style-01-raw-captions/STYLE_GUIDE.md`](styles/style-01-raw-captions/STYLE_GUIDE.md) |
-| `style-02-broll-story` | **B-Roll Story** | B-roll driven, client footage only (no stock), punch-in zooms, music. | Mechanics built; rules are placeholders until its reference video is analysed — see [`styles/style-02-broll-story/STYLE_GUIDE.md`](styles/style-02-broll-story/STYLE_GUIDE.md) |
+| `style-01-raw-captions` | **Raw Captions** | Caption-only talking head. Punchline cold-open + title card, tight jump cuts, big centred line-by-line captions, censored swears, quiet music bed, no b-roll, no zooms. | Learned from sample `0001.mp4` — [`STYLE_GUIDE.md`](styles/style-01-raw-captions/STYLE_GUIDE.md) |
+| `style-02-broll-story` | **B-Roll Story** | Pre-cut podcast clip + client SRT, b-roll from client library (no stock), punch-in zooms, music. | Mechanics built; spacing/zoom numbers are placeholders until its reference video is analysed — [`STYLE_GUIDE.md`](styles/style-02-broll-story/STYLE_GUIDE.md) |
 
 Each style is a `style.json` (every number the pipeline uses) plus a
-`STYLE_GUIDE.md` (how that editor thinks, with the measurements). New styles
-are new folders.
+`STYLE_GUIDE.md` (how that editor thinks). New styles are new folders.
 
 ## Install
 
 ```bash
-pip install -r requirements.txt      # faster-whisper only needed when there is no SRT
+pip install -r requirements.txt   # faster-whisper only if a clip has no SRT; anthropic only for --ai
 # ffmpeg + ffprobe on PATH
 ```
 
-## Use
-
-Pre-cut clip with the client's SRT (the normal job): the SRT is used for timing
-and copied through unchanged for the caption track.
+## Daily workflow
 
 ```bash
-python -m autoedit edit clip.mp4 --style style-02-broll-story \
-    --srt clip.srt --broll-dir "Client/BRoll" --music track.mp3 --preview
-```
+# 1. once per client, and again whenever new b-roll is added (only new files are processed)
+python -m autoedit catalog "Clients/Acme/BRoll"
+python -m autoedit describe "Clients/Acme/BRoll"     # optional: AI looks at each NEW file once
 
-Raw footage in Style 01 (transcribes locally, cuts pauses/fillers/retakes,
-moves a chosen line to the front as the hook):
-
-```bash
-python -m autoedit transcript raw.mp4            # numbered sentences + times, pick the hook
-python -m autoedit edit raw.mp4 --style style-01-raw-captions --mode tight \
-    --hook 41.2-45.9 --title-card bloom_title.png --music bed.mp3 --preview
-```
-
-A day's inbox (every `.mp4/.mov` in the folder, matching `.srt` picked up by
-name, music rotated through a folder):
-
-```bash
+# 2. the day's clips (parallel, skips anything already finished)
 python -m autoedit batch inbox/ --style style-02-broll-story \
-    --broll-dir "Client/BRoll" --music-dir music/ --out output/ --preview
+    --broll-dir "Clients/Acme/BRoll" --music-dir music/ --out output/ --jobs 4 [--ai] [--preview]
+
+# 3. for clips with empty slots: drop files named B01…, or edit slots.json, then
+python -m autoedit fill output/clip_017/ --preview
+
+# 4. Premiere: run premiere/AutoEdit_Import.jsx (or File > Import the .xml + drag the .srt),
+#    apply the caption Track Style, review, export.
 ```
 
-Then in Premiere: run `premiere/AutoEdit_Import.jsx` (imports every sequence and
-puts each SRT on a caption track), or File > Import the `.xml` and drag the
-`_captions.srt` onto it. Apply the saved caption **Track Style**, review, export.
+## B-roll: slots first, footage second
 
-### Options
+B-roll is decided in two separate steps, so the computer, an editor or AI can
+each do the part they are good at:
 
-| Flag | Meaning |
+1. **Where** — from what is said and the style rules (style.json `broll`):
+   start after the hook, 1.5–3.5 s, ending on a word, ≥ 2 s apart, nothing in
+   the last 1.5 s, ≤ 45 % coverage. Each slot gets an id, the phrase and
+   suggested search words:
+   ```json
+   {"id": "B03", "start": 12.4, "duration": 2.6, "phrase": "you smash the piggy bank",
+    "keywords": ["piggy", "smash", "bank"], "label": "piggy smash", "file": null}
+   ```
+2. **What** — first match wins:
+
+   | Priority | Source | How |
+   |---|---|---|
+   | 1 | **you, by hand** | set `"file"` in `slots.json` to a path, a library file name, or plain words ("gym squat") |
+   | 2 | **dropped file** | put `B03.mp4` (or `B03_anything.mov`) in `output/<clip>/broll/` |
+   | 3 | **AI pick** (`--ai`) | Claude picks from the library catalog (text only, see below) |
+   | 4 | **keyword match** | slot words vs. library tags and descriptions (free, offline) |
+
+   A slot nothing fills stays a **labelled gap**: a translucent yellow-bordered
+   slate on V2 reading "B-ROLL B03 / piggy smash / *you smash the piggy bank*",
+   plus a sequence marker "B03 EMPTY - piggy smash". The editor sees exactly
+   where b-roll is needed and what to search for (Pinterest, client drive…).
+   `--no-placeholders` leaves the gap blank instead.
+
+`fill` keeps every hand edit and re-matches everything else, so re-running
+after adding library footage or dropping files is safe.
+
+### Library naming (makes matching work without AI)
+
+Name files by what they show: `smash-piggy-bank.mp4`, `office/team-meeting-laptop.mov`
+(folder names count). Camera names like `IMG_0412.MOV` carry no tags: add them in
+`tags.json` (`{"IMG_0412.MOV": ["gym", "squat"]}`), type a `"desc"` in
+`catalog.json`, or run `describe`.
+
+## Keeping AI tokens low
+
+Everything except `describe` and `--ai` is plain code with no tokens. When AI
+is used, it is set up to cost as little as possible:
+
+| Step | What is sent | How often |
+|---|---|---|
+| `describe` | one tiny 3-frame strip per library file (160 px frames), 12 files per request | **once per file, ever** (cached in `catalog.json`) |
+| `--ai` pick | text only: the clip's open slots + a shortlist of ≤ 40 library lines `id \| tags \| desc` | once per clip, only for slots still empty |
+| style learning | `autoedit analyze ref.mp4` → `report.md` + small contact sheets | once per new style |
+
+No video is ever uploaded. Model: `--ai-model` (default `claude-opus-5-5` at low
+effort; any Claude model id works).
+
+## Learning a new style
+
+```bash
+python -m autoedit analyze reference.mp4
+```
+writes `analysis/reference/report.md` (cuts and shot lengths, caption band /
+timing / lines / width, pauses, loudness, music-bed level) and 2 fps contact
+sheets. On the Style 01 sample it reproduces the hand measurements: cuts at
+1.33 / 12.55 / 15.93 / 30.2 s, 2-line captions ~66 % wide centred at ~49 %,
+-14.4 LUFS. Those numbers go into a new `styles/<id>/style.json`.
+
+## Commands
+
+| Command | Does |
 |---|---|
-| `--mode none\|tight` | `none` = clip already cut (default when an SRT is present); `tight` = remove pauses > 0.3 s, fillers and false starts |
-| `--hook A-B` | (tight) source range to move to the front as the cold-open hook |
-| `--hook-end S` | (pre-cut) where the hook ends; default = end of the first sentence |
-| `--title-card PNG` | transparent **full-frame** (1080×1920) PNG shown during the hook, dissolves in/out |
-| `--broll-dir DIR` | client b-roll library, matched to what is being said |
-| `--broll-plan JSON` | manual placements instead: `[{"file": "...", "start": 3.2, "duration": 2.5, "src_in": 0}]` |
-| `--music FILE` / `--music-dir DIR` | music bed, set to the style's level with fades |
-| `--no-captions` | skip caption generation |
-| `--preview` | also render an MP4 with ffmpeg (captions burned in) |
+| `edit CLIP` | one clip |
+| `batch FOLDER` | every `.mp4/.mov` (matching `.srt` by name), `--jobs N` in parallel, skips finished clips (`--force` redoes) |
+| `fill JOB_DIR` | rebuild a clip after filling slots |
+| `catalog DIR` / `describe DIR` | index / AI-describe the b-roll library |
+| `analyze VIDEO` | measure a reference edit |
+| `transcript CLIP` | numbered sentences with times (pick a hook) |
 
-### B-roll library
+Common options: `--style`, `--mode none|tight` (pre-cut vs. cut pauses/fillers/retakes),
+`--hook A-B` (tight: move a line to the front), `--hook-end S` (pre-cut: where the hook ends),
+`--title-card PNG` (transparent full-frame PNG during the hook), `--music` / `--music-dir`,
+`--broll-dir`, `--broll-plan JSON`, `--ai`, `--no-placeholders`, `--no-captions`,
+`--preview [fast|full]` (fast = 540×960 draft).
 
-Name files by what they show — the filename words are the tags:
-`smash-piggy-bank.mp4`, `office/team-meeting-laptop.mov` (folder names count
-too). Extra tags for camera-named files go in `tags.json` in the library root:
-
-```json
-{ "IMG_0412.mov": ["gym", "workout", "training"] }
-```
-
-The matcher places a clip on the word that triggers it, 1.5–3.5 s long, ending
-on a word boundary, ≥ 2 s apart, never over the hook or the last 1.5 s, each
-clip used once, ≤ 45 % coverage, horizontal footage scaled to fill 9:16. Every
-decision is written to `_plan.json` with the matched words. The tool never
-downloads anything — Pinterest/other references and music have to be saved
-into the folders by you with the right to use them.
-
-## What the Premiere sequence contains
+## The Premiere sequence
 
 | Track | Content |
 |---|---|
-| V1 | talking head, cut, with Scale set per segment (punch-ins) |
-| V2 | b-roll |
+| V1 | talking head, cut, Scale per segment (punch-ins) |
+| V2 | b-roll + placeholder slates for empty slots |
 | V3 | title card (Cross Dissolve in/out) |
 | A1/A2 | talking-head audio |
-| A3/A4 | music at the style's gain with Cross Fade in/out |
-| captions | from `_captions.srt` |
+| A3/A4 | music at the style's gain, Cross Fade in/out |
+| markers | one per b-roll slot (filled file or EMPTY + search words) |
+| captions | from `_captions.srt` (client SRT passed through untouched on pre-cut jobs) |
 
-Captions styling (font, size, position) lives in Premiere as a caption Track
-Style. For Style 01 create it once from the values in its `STYLE_GUIDE.md`
-(SF Pro Display / Inter SemiBold, 57 px, white, soft shadow, centre ~49 % down,
-max 2 lines). The `--preview` render already uses that look.
+## Speed (measured, 4-core container, 60 s 1080×1920 clip)
+
+| Step | Time |
+|---|---|
+| plan + XML + SRT + slots | ~2 s |
+| `--preview` draft (540×960) | ~16 s without placeholders, ~26 s with |
+| `--preview full` | ~40 s |
+
+Previews are optional; the Premiere XML is the deliverable. With `--jobs 4`
+a 30-clip inbox builds in about a minute without previews.
 
 ## Tests
 
 ```bash
 python -m pytest -q
 ```
-
-Generates synthetic footage, b-roll, music and title card, runs both styles end
-to end (XML structure, caption rules, retake/filler/pause cutting, zooms, b-roll
-matching, title-card visibility, preview duration).
+Synthetic footage, b-roll, music and title card; both styles end to end, slots
+/ placeholders / markers / `fill` (dropped files and hand labels), batch
+parallel + skip, `analyze`, caption rules, retake / filler / pause cutting,
+zooms, title-card visibility, and the AI picker's prompt size and validation
+(mocked, no tokens).
 
 ## Not verified yet
 
-- The XML and JSX were checked structurally and through ffmpeg renders, but not
-  opened in Premiere from this environment. Confirm on the first real clip that
-  the scale values, transitions and the stereo audio pair import as expected.
+- XML/JSX checked structurally and via ffmpeg renders, not yet opened in
+  Premiere here: confirm on the first real clip that Scale, transitions,
+  markers and the stereo audio pair import as expected.
+- `describe` / `--ai` are tested with a mocked client only; the first real run
+  will show whether the descriptions are useful enough.
 - ExtendScript is being replaced by UXP in newer Premiere versions; if the JSX
-  doesn't run, use the manual import (two drags).
+  doesn't run, use the manual import.

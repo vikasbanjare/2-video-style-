@@ -1,13 +1,19 @@
 """Command line entry point.
 
-  python -m autoedit edit  CLIP.mp4 --style style-01-raw-captions [options]
-  python -m autoedit batch INBOX/   --style style-02-broll-story  [options]
-  python -m autoedit transcript CLIP.mp4      (numbered sentences, for picking a hook)
+  python -m autoedit edit  CLIP.mp4 --style ID [options]      one clip
+  python -m autoedit batch INBOX/   --style ID [options]      a folder, in parallel, skips finished clips
+  python -m autoedit fill  output/CLIP/ [--preview]          rebuild after filling b-roll slots by hand
+  python -m autoedit catalog BROLL_DIR                        index the b-roll library (cached)
+  python -m autoedit describe BROLL_DIR                       AI-describe new library files once (optional)
+  python -m autoedit analyze REF.mp4                          measure a reference edit (style learning)
+  python -m autoedit transcript CLIP.mp4                      numbered sentences, for picking a hook
 """
 import argparse
 import itertools
 import json
+import shutil
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from . import broll as broll_mod
@@ -53,11 +59,17 @@ def parse_range(s):
     return float(a), float(b)
 
 
-def edit_one(video, style, args, music_file=None, log=print):
-    video = Path(video)
+def _srt_for(video, args):
+    p = args.srt or Path(video).with_suffix(".srt")
+    return Path(p) if p and Path(p).exists() else None
+
+
+def edit_one(video, style, args, music_file=None, slots_override=None, log=print):
+    video = Path(video).resolve()
     src = probe(video)
-    words = get_words(video, args.srt, args.words, args.model)
-    mode = args.mode or ("tight" if style["id"].startswith("style-01") and not (args.srt or video.with_suffix(".srt").exists()) else "none")
+    srt = _srt_for(video, args)
+    words = get_words(video, srt, args.words, args.model)
+    mode = args.mode or ("tight" if style["id"].startswith("style-01") and not srt else "none")
     plan = build_plan(words, src.duration, style, mode=mode, hook=parse_range(args.hook) if args.hook else None)
     if mode == "none":
         plan.hook_end = args.hook_end if args.hook_end is not None else first_sentence_end(plan.words)
@@ -65,26 +77,43 @@ def edit_one(video, style, args, music_file=None, log=print):
             w["hook"] = w["e"] <= plan.hook_end + 0.01
     plan = apply_zooms(plan, style.get("zoom"))
 
-    out = Path(args.out) / video.stem
+    out = Path(args.out).resolve() / video.stem
     out.mkdir(parents=True, exist_ok=True)
+    W, H = style["sequence"]["width"], style["sequence"]["height"]
 
     cues = None
     if style["captions"].get("enabled") and not args.no_captions:
         cues = build_cues(plan.words, style["captions"], plan.hook_end,
                           style["hook"].get("caption_mode", "static"), style["hook"].get("gap_after", 0.2))
         write_srt(cues, out / f"{video.stem}_captions.srt")
-    elif mode == "none" and (args.srt or video.with_suffix(".srt").exists()):
-        # pre-cut job with the client's own SRT: pass it through untouched
-        import shutil
-        shutil.copy(args.srt or video.with_suffix(".srt"), out / f"{video.stem}_captions.srt")
+    elif mode == "none" and srt:
+        shutil.copy(srt, out / f"{video.stem}_captions.srt")   # client's SRT, untouched
 
-    placements = []
-    if args.broll_plan:
-        placements = broll_mod.load_plan(args.broll_plan)
-    elif style["broll"].get("enabled") and args.broll_dir:
-        lib = broll_mod.load_library(args.broll_dir)
-        placements = broll_mod.auto_place(plan.words, plan.duration, lib, style["broll"], plan.hook_end)
-    placements = broll_mod.with_media_info(placements)
+    # ---- b-roll: where (slots), then what (manual > dropped files > AI > keywords)
+    slots = []
+    if slots_override is not None:
+        slots = slots_override
+    elif args.broll_plan:
+        slots = broll_mod.load_plan(args.broll_plan)
+    elif style["broll"].get("enabled"):
+        slots = broll_mod.plan_slots(plan.words, plan.duration, style["broll"], plan.hook_end)
+    library = broll_mod.load_library(args.broll_dir) if args.broll_dir else []
+    picker = None
+    if args.ai and library:
+        from .ai import make_picker
+        picker = make_picker(args.ai_model)
+    (out / "broll").mkdir(exist_ok=True)
+    slots = broll_mod.fill_slots(slots, library, out / "broll", picker)
+    placements = broll_mod.to_placements(slots)
+    if not args.no_placeholders:
+        from .slate import make_slate
+        for s in slots:
+            if not s.get("file"):
+                png = make_slate(s, out / "placeholders" / f"{s['id']}.png", W, H)
+                placements.append(dict(s, file=str(png), info=probe(png), still=True, placeholder=True))
+        placements.sort(key=lambda p: p["start"])
+    (out / "slots.json").write_text(json.dumps(slots, indent=1))
+    (out / ".slots_auto.json").write_text(json.dumps(slots, indent=1))  # lets `fill` spot hand edits
 
     title = None
     if args.title_card and plan.hook_end:
@@ -97,24 +126,89 @@ def edit_one(video, style, args, music_file=None, log=print):
 
     from .xml_export import write_xml
     write_xml(out / f"{video.stem}.xml", f"{video.stem} - {style['name']}", plan, src, style,
-              placements, title, music)
+              placements, title, music, slots)
 
+    filled = sum(1 for s in slots if s.get("file"))
+    saved_args = {k: v for k, v in vars(args).items() if k not in ("func",)}
+    saved_args.update(style=style["id"], music=str(music_file) if music_file else None, video=str(video))
     report = {
-        "source": str(video.resolve()), "style": style["id"], "mode": mode, "duration": round(plan.duration, 3),
+        "source": str(video), "style": style["id"], "mode": mode, "duration": round(plan.duration, 3),
         "hook_end": round(plan.hook_end, 3), "notes": plan.notes,
         "clips": [vars(c) for c in plan.clips],
-        "broll": [{k: v for k, v in p.items() if k != "info"} for p in placements],
-        "music": str(music_file) if music else None,
-        "captions": len(cues or []),
+        "broll": {"slots": len(slots), "filled": filled, "empty": len(slots) - filled},
+        "music": str(music_file) if music else None, "captions": len(cues or []), "args": saved_args,
     }
     (out / f"{video.stem}_plan.json").write_text(json.dumps(report, indent=1))
 
     if args.preview:
         from .preview import render
-        render(out / f"{video.stem}_preview.mp4", plan, src, style, cues, placements, title, music, out)
-    log(f"[ok] {video.name}: {plan.duration:.1f}s, {len(plan.clips)} clips, {len(placements)} b-roll, "
+        render(out / f"{video.stem}_preview.mp4", plan, src, style, cues, placements, title, music, out,
+               fast=args.preview == "fast")
+    log(f"[ok] {video.name}: {plan.duration:.1f}s, {len(plan.clips)} shots, b-roll {filled}/{len(slots)} slots filled, "
         f"{len(cues or [])} caption cues -> {out}")
     return report
+
+
+def cmd_fill(args):
+    """Re-run a finished job after the editor filled slots: by editing "file" in
+    slots.json (a path, a library file name, or plain words) or by dropping
+    B01.mp4, B02.mov ... into output/<clip>/broll/. Hand edits are kept; every
+    other slot is matched again (new drops, new library files, --ai)."""
+    out = Path(args.job).resolve()
+    plan = json.loads(next(out.glob("*_plan.json")).read_text())
+    saved = argparse.Namespace(**plan["args"])
+    saved.preview = args.preview
+    saved.out = str(out.parent)
+    saved.broll_plan = None
+    if args.broll_dir:
+        saved.broll_dir = args.broll_dir
+    saved.ai = args.ai
+    slots = json.loads((out / "slots.json").read_text())
+    auto = {a["id"]: a for a in json.loads((out / ".slots_auto.json").read_text())}
+    for s in slots:
+        a = auto.get(s["id"], {})
+        if s.get("file") != a.get("file"):
+            s["source"] = "manual" if s.get("file") and Path(s["file"]).exists() else None
+        elif s.get("source") != "plan":
+            s["file"], s["source"] = None, None
+    edit_one(saved.video, load_style(saved.style), saved, saved.music, slots_override=slots)
+
+
+def _job(video, style_id, args_dict, music):
+    args = argparse.Namespace(**args_dict)
+    edit_one(video, load_style(style_id), args, music, log=lambda *_: None)
+    return Path(video).name
+
+
+def _is_done(video, out_dir):
+    xml = Path(out_dir) / video.stem / f"{video.stem}.xml"
+    if not xml.exists():
+        return False
+    newest = max(p.stat().st_mtime for p in [video, video.with_suffix(".srt")] if p.exists())
+    return xml.stat().st_mtime >= newest
+
+
+def cmd_batch(args, style):
+    videos = sorted(f for f in Path(args.folder).iterdir() if f.suffix.lower() in VIDEO_EXT)
+    todo = [v for v in videos if args.force or not _is_done(v, args.out)]
+    if len(todo) < len(videos):
+        print(f"skipping {len(videos) - len(todo)} already-finished clips (use --force to redo)")
+    tracks = sorted(f for f in Path(args.music_dir).iterdir() if f.suffix.lower() in AUDIO_EXT) if args.music_dir else []
+    rotation = itertools.cycle(tracks) if tracks else itertools.repeat(args.music)
+    if args.broll_dir:  # index once up front instead of in every worker
+        from .catalog import build_catalog
+        build_catalog(args.broll_dir, thumbs=False)
+    failed = 0
+    with ProcessPoolExecutor(max_workers=args.jobs) as pool:
+        futs = {pool.submit(_job, v, style["id"], vars(args), next(rotation)): v for v in todo}
+        for f in as_completed(futs):
+            try:
+                print(f"[ok] {f.result()}")
+            except Exception as e:  # keep the batch going; report at the end
+                failed += 1
+                print(f"[FAILED] {futs[f].name}: {e}", file=sys.stderr)
+    print(f"done: {len(todo) - failed}/{len(todo)} clips")
+    sys.exit(1 if failed else 0)
 
 
 def cmd_transcript(args):
@@ -141,35 +235,50 @@ def main(argv=None):
         p.add_argument("--music", help="music file (or use --music-dir in batch)")
         p.add_argument("--broll-dir", help="client b-roll library folder")
         p.add_argument("--broll-plan", help="manual b-roll plan JSON")
+        p.add_argument("--ai", action="store_true", help="let Claude pick b-roll for the slots (text only, cheap)")
+        p.add_argument("--ai-model", default="claude-opus-5-5")
+        p.add_argument("--no-placeholders", action="store_true", help="leave empty slots blank instead of slates")
         p.add_argument("--no-captions", action="store_true")
-        p.add_argument("--preview", action="store_true", help="also render an MP4 preview with ffmpeg")
+        p.add_argument("--preview", nargs="?", const="fast", choices=["fast", "full"],
+                       help="render an MP4 preview: fast = 540x960 draft (default), full = 1080x1920")
         p.add_argument("--out", default="output")
 
     p = sub.add_parser("edit"); p.add_argument("video"); common(p)
     p = sub.add_parser("batch"); p.add_argument("folder"); common(p)
     p.add_argument("--music-dir", help="music folder; tracks are rotated across clips")
+    p.add_argument("--jobs", type=int, default=3, help="clips processed in parallel")
+    p.add_argument("--force", action="store_true", help="redo clips that are already finished")
+    p = sub.add_parser("fill"); p.add_argument("job", help="output/<clip> folder")
+    p.add_argument("--broll-dir"); p.add_argument("--ai", action="store_true")
+    p.add_argument("--preview", nargs="?", const="fast", choices=["fast", "full"])
+    p = sub.add_parser("catalog"); p.add_argument("folder"); p.add_argument("--no-thumbs", action="store_true")
+    p = sub.add_parser("describe"); p.add_argument("folder"); p.add_argument("--ai-model", default="claude-opus-5-5")
+    p = sub.add_parser("analyze"); p.add_argument("video"); p.add_argument("--out")
     p = sub.add_parser("transcript"); p.add_argument("video")
     p.add_argument("--srt"); p.add_argument("--words"); p.add_argument("--model", default="small")
     args = ap.parse_args(argv)
 
     if args.cmd == "transcript":
         return cmd_transcript(args)
+    if args.cmd == "fill":
+        return cmd_fill(args)
+    if args.cmd == "catalog":
+        from .catalog import build_catalog
+        return build_catalog(args.folder, thumbs=not args.no_thumbs)
+    if args.cmd == "describe":
+        from .ai import describe_library
+        return describe_library(args.folder, args.ai_model)
+    if args.cmd == "analyze":
+        from .analyze import analyze
+        out = args.out or f"analysis/{Path(args.video).stem}"
+        analyze(args.video, out)
+        print((Path(out) / "report.md").read_text())
+        return
     style = load_style(args.style)
     if args.cmd == "edit":
         edit_one(args.video, style, args, args.music)
         return
-    videos = sorted(f for f in Path(args.folder).iterdir() if f.suffix.lower() in VIDEO_EXT)
-    tracks = sorted(f for f in Path(args.music_dir).iterdir() if f.suffix.lower() in AUDIO_EXT) if args.music_dir else []
-    rotation = itertools.cycle(tracks) if tracks else itertools.repeat(args.music)
-    failed = 0
-    for v in videos:
-        try:
-            edit_one(v, style, args, next(rotation))
-        except Exception as e:  # keep the batch going; report at the end
-            failed += 1
-            print(f"[FAILED] {v.name}: {e}", file=sys.stderr)
-    print(f"done: {len(videos) - failed}/{len(videos)} clips")
-    sys.exit(1 if failed else 0)
+    cmd_batch(args, style)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -110,7 +111,7 @@ def _check_xml(path, expect_tracks):
 def test_style01_end_to_end(media, tmp_path):
     main(["edit", str(media / "clip.mp4"), "--style", "style-01-raw-captions", "--mode", "tight",
           "--hook", "9.0-11.6", "--title-card", str(media / "title.png"), "--music", str(media / "music.mp3"),
-          "--out", str(tmp_path), "--preview"])
+          "--out", str(tmp_path), "--preview", "full"])
     out = tmp_path / "clip"
     _check_xml(out / "clip.xml", {"video": 2, "audio": 4})   # V1 + title card; A1/A2 + music L/R
     assert (out / "clip_captions.srt").read_text().count("-->") >= 6
@@ -127,14 +128,98 @@ def test_style01_end_to_end(media, tmp_path):
     assert title_luma(plan["hook_end"] + 1.0) < 240     # and gone after it
 
 
-def test_style02_precut_srt_broll_zoom(media, tmp_path):
+def test_style02_slots_placeholders_and_fill(media, tmp_path):
     main(["edit", str(media / "clip.mp4"), "--style", "style-02-broll-story", "--srt", str(media / "precut.srt"),
           "--broll-dir", str(media / "broll"), "--music", str(media / "music.mp3"), "--out", str(tmp_path), "--preview"])
     out = tmp_path / "clip"
     plan = json.loads((out / "clip_plan.json").read_text())
     assert plan["mode"] == "none"
-    assert len(plan["clips"]) >= 2 and {c["scale"] for c in plan["clips"]} == {100, 112}
-    assert [Path(b["file"]).name for b in plan["broll"]] == ["six-figure-mistakes-money.mp4", "telling-crowd.png"]
-    seq = _check_xml(out / "clip.xml", {"video": 2, "audio": 4})
+    assert len(plan["clips"]) >= 2 and {c["scale"] for c in plan["clips"]} == {100, 112}   # punch-ins
     assert (out / "clip_captions.srt").read_text() == (media / "precut.srt").read_text()  # client SRT untouched
-    assert probe(out / "clip_preview.mp4").duration > 14
+    assert probe(out / "clip_preview.mp4").width == 540                                    # fast draft
+
+    slots = json.loads((out / "slots.json").read_text())
+    assert [s["id"] for s in slots] == ["B01", "B02"]
+    b1, b2 = slots
+    assert Path(b1["file"]).name == "six-figure-mistakes-money.mp4" and "mistakes" in b1["keywords"]
+    assert b1["start"] >= plan["hook_end"]                       # never over the hook
+    assert b2["file"] is None and (out / "placeholders" / "B02.png").exists()
+    seq = _check_xml(out / "clip.xml", {"video": 2, "audio": 4})
+    names = [m.find("name").text for m in seq.findall("marker")]
+    assert names[0].startswith("B01 six-figure") and names[1].startswith("B02 EMPTY")
+    v2 = [c.find("name").text for c in seq.findall("media/video/track")[1].findall("clipitem")]
+    assert v2 == ["six-figure-mistakes-money.mp4", "B02.png"]
+
+    # editor drops a file named after the slot, then runs `fill`
+    shutil.copy(media / "broll" / "telling-crowd.png", out / "broll" / "B02.png")
+    main(["fill", str(out)])
+    slots = json.loads((out / "slots.json").read_text())
+    assert slots[1]["source"] == "dropped" and slots[0]["file"].endswith("six-figure-mistakes-money.mp4")
+    seq = ET.parse(out / "clip.xml").getroot().find("sequence")
+    assert all("EMPTY" not in m.find("name").text for m in seq.findall("marker"))
+
+    # editor overrides a slot by typing a library name into slots.json
+    slots[0]["file"] = "telling-crowd"
+    (out / "slots.json").write_text(json.dumps(slots))
+    (out / "broll" / "B02.png").unlink()
+    main(["fill", str(out)])
+    slots = json.loads((out / "slots.json").read_text())
+    assert Path(slots[0]["file"]).name == "telling-crowd.png" and slots[0]["source"] == "label"
+
+
+def test_plan_slots_without_library():
+    from autoedit.broll import plan_slots
+    words = W("So we started the company in a tiny garage with two laptops and a dog. "
+              "Then investors flew in from London to see the prototype.", 0.0, step=0.4)
+    slots = plan_slots(words, 25.0, STYLE2["broll"], hook_end=2.0)
+    assert slots and all(s["file"] is None for s in slots)
+    for a, b in zip(slots, slots[1:]):
+        assert b["start"] - (a["start"] + a["duration"]) >= STYLE2["broll"]["min_gap"] - 1e-6
+    assert all(STYLE2["broll"]["min_len"] * 0.8 <= s["duration"] <= STYLE2["broll"]["max_len"] for s in slots)
+    assert any(k in ("garage", "laptops", "investors", "prototype", "company", "london") for s in slots for k in s["keywords"])
+
+
+def test_analyze_reference(media, tmp_path):
+    from autoedit.analyze import analyze
+    main(["edit", str(media / "clip.mp4"), "--style", "style-01-raw-captions", "--mode", "tight",
+          "--hook", "9.0-11.6", "--out", str(tmp_path), "--preview", "full"])
+    rep = analyze(tmp_path / "clip" / "clip_preview.mp4", tmp_path / "an")
+    assert rep["captions"] and 40 < rep["captions"]["band_y_pct"][0] < 52 and rep["captions"]["max_lines"] == 2
+    assert (tmp_path / "an" / "report.md").exists() and (tmp_path / "an" / "sheet_01.jpg").exists()
+
+
+def test_batch_parallel_and_skip(media, tmp_path, capsys):
+    inbox = tmp_path / "inbox"; inbox.mkdir()
+    for n in ("a", "b"):
+        shutil.copy(media / "clip.mp4", inbox / f"{n}.mp4")
+        shutil.copy(media / "precut.srt", inbox / f"{n}.srt")
+    args = ["batch", str(inbox), "--style", "style-02-broll-story", "--out", str(tmp_path / "out"), "--jobs", "2"]
+    with pytest.raises(SystemExit) as e:
+        main(args)
+    assert e.value.code == 0 and (tmp_path / "out" / "a" / "a.xml").exists() and (tmp_path / "out" / "b" / "b.xml").exists()
+    with pytest.raises(SystemExit):
+        main(args)
+    assert "skipping 2 already-finished" in capsys.readouterr().out
+
+
+def test_ai_picker_prompt_is_small_and_validated(monkeypatch):
+    from types import SimpleNamespace
+    from autoedit import ai
+    sent = {}
+
+    class FakeMessages:
+        def create(self, **kw):
+            sent.update(kw)
+            text = '{"B01": "L0002", "B02": "L9999", "B03": null}'   # one valid, one hallucinated id, one null
+            return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=text)])
+
+    monkeypatch.setattr(ai, "_client", lambda: SimpleNamespace(beta=SimpleNamespace(messages=FakeMessages())))
+    lib = [{"id": f"L{n:04d}", "file": f"/lib/{n}.mp4", "tags": {t}, "desc": ""}
+           for n, t in enumerate(["dog", "garage", "laptop"] + [f"misc{k}" for k in range(100)], 1)]
+    slots = [{"id": f"B0{k}", "duration": 2.0, "phrase": p, "keywords": p.split()}
+             for k, p in enumerate(["tiny garage", "two laptops", "the dog"], 1)]
+    picks = ai.make_picker(limit=40)(slots, lib)
+    assert picks == {"B01": "/lib/2.mp4"}                       # invalid / null ids dropped
+    prompt = sent["messages"][0]["content"]
+    assert isinstance(prompt, str) and prompt.count("\nL") <= 40   # text only, shortlisted library
+    assert "garage" in prompt and len(prompt) < 4000
